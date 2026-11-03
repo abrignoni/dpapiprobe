@@ -6,7 +6,7 @@ containers that wrap them.
 """
 from .arso import parse_tbal
 from .blob import DpapiBlob, decrypt_blob, find_blob_offset
-from .credvault import CredentialFile, VaultPolicy
+from .credvault import CredentialFile, VaultCredential, VaultPolicy, parse_web_credential
 from .masterkey import (
     MasterKeyPool,
     decrypt_master_key,
@@ -21,14 +21,16 @@ from .registry_secrets import (
     system_master_key_candidates,
 )
 
-__version__ = '0.2.0'
+__version__ = '0.3.0'
 
 __all__ = [
     'DpapiBlob',
     'decrypt_blob',
     'find_blob_offset',
     'CredentialFile',
+    'VaultCredential',
     'VaultPolicy',
+    'parse_web_credential',
     'MasterKeyPool',
     'decrypt_master_key',
     'master_key_guid',
