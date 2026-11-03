@@ -25,6 +25,8 @@ jobs:
           pip install -e .
           pip install pytest pylint
       - name: Lint
-        run: python -m pylint dpapiprobe --disable=C,R
+        # dpapiprobe/vendor holds ewfprobe/qnxprobe copied verbatim; they are
+        # guarded by their own repos, not linted here, so skip that directory.
+        run: python -m pylint dpapiprobe --disable=C,R --ignore=vendor
       - name: Test
         run: pytest -q
