@@ -6,6 +6,14 @@ containers that wrap them.
 """
 from .arso import parse_tbal
 from .blob import DpapiBlob, decrypt_blob, find_blob_offset
+from .chromium import (
+    decrypt_gcm,
+    decrypt_value,
+    load_os_crypt,
+    os_crypt_key,
+    strip_cookie_host_hash,
+    value_scheme,
+)
 from .credvault import CredentialFile, VaultCredential, VaultPolicy, parse_web_credential
 from .masterkey import (
     MasterKeyPool,
@@ -21,12 +29,18 @@ from .registry_secrets import (
     system_master_key_candidates,
 )
 
-__version__ = '0.3.0'
+__version__ = '0.4.0'
 
 __all__ = [
     'DpapiBlob',
     'decrypt_blob',
     'find_blob_offset',
+    'load_os_crypt',
+    'os_crypt_key',
+    'value_scheme',
+    'decrypt_gcm',
+    'decrypt_value',
+    'strip_cookie_host_hash',
     'CredentialFile',
     'VaultCredential',
     'VaultPolicy',
