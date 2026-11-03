@@ -206,45 +206,77 @@ def cmd_user_masterkeys(args):
     return _report_pool(_user_pool(args))
 
 
-def cmd_vault(args):
-    pool = _user_pool(args)
-    vpol_path = os.path.join(args.vault_dir, 'Policy.vpol')
+def _decrypt_vault_dir(vault_dir, pool):
+    """Recovered web credentials from one Vault directory as a list of dicts."""
+    vpol_path = os.path.join(vault_dir, 'Policy.vpol')
     if not os.path.isfile(vpol_path):
-        print('no Policy.vpol in %s' % args.vault_dir, file=sys.stderr)
-        return 1
+        return []
     vpol = VaultPolicy(_read(vpol_path))
     vpol.decrypt_with_pool(pool)
     aes_keys = vpol.aes_key_candidates(32)
     if not aes_keys:
-        print('vault policy key not recovered (user key not available)', file=sys.stderr)
-        return 1
-    records = []
-    recovered = 0
-    for vcrd_path in sorted(glob.glob(os.path.join(args.vault_dir, '*.vcrd'))):
+        return []
+    out = []
+    for vcrd_path in sorted(glob.glob(os.path.join(vault_dir, '*.vcrd'))):
         record = VaultCredential(_read(vcrd_path))
         decrypted, _key = record.decrypt(aes_keys)
-        creds = [parse_web_credential(clear) for clear in (decrypted or {}).values()]
-        creds = [cred for cred in creds if cred]
-        for cred in creds:
-            recovered += 1
-            print('%-28s %-24s pw_len=%d pw_fp=%s'
-                  % (cred['resource'][:28], cred['user'][:24],
-                     len(cred['password']), _fp(cred['password'].encode('utf-8', 'replace'))))
-            records.append({'schema': record.friendly_name, 'resource': cred['resource'],
+        for clear in (decrypted or {}).values():
+            cred = parse_web_credential(clear)
+            if cred:
+                out.append({'schema': record.friendly_name, 'resource': cred['resource'],
                             'user': cred['user'], 'password': cred['password'],
-                            'source': os.path.basename(vcrd_path)})
+                            'source': os.path.basename(vcrd_path), 'vault': vault_dir})
+    return out
+
+
+def _print_creds(records):
+    for cred in records:
+        print('%-28s %-24s pw_len=%d pw_fp=%s'
+              % (cred['resource'][:28], cred['user'][:24], len(cred['password']),
+                 _fp(cred['password'].encode('utf-8', 'replace'))))
+
+
+def cmd_vault(args):
+    records = _decrypt_vault_dir(args.vault_dir, _user_pool(args))
+    if not records:
+        print('no web credential recovered (user key or vault policy not available)',
+              file=sys.stderr)
+    _print_creds(records)
     if args.out:
         with open(args.out, 'w', encoding='utf-8') as handle:
             json.dump(records, handle, indent=2)
         print('wrote %d credential(s) to %s' % (len(records), args.out))
-    return 0 if recovered else 1
+    return 0 if records else 1
 
 
-def _chromium_key(args):
-    pool = _user_pool(args)
-    with open(args.local_state, 'r', encoding='utf-8') as handle:
+def _decrypt_chromium_profile(local_state, login_data, cookies, pool):
+    """(os_crypt key, app_bound flag, [record dicts]) for one Chromium profile."""
+    with open(local_state, 'r', encoding='utf-8') as handle:
         key, info = os_crypt_key(json.load(handle), pool)
-    return pool, key, info
+    records = []
+    if login_data and os.path.isfile(login_data):
+        for origin, username, pwv in _chromium_rows(
+                login_data, 'logins', ('origin_url', 'username_value', 'password_value')):
+            if not pwv:
+                continue
+            clear, scheme = decrypt_value(bytes(pwv), key=key, mk_pool=pool)
+            records.append(_record('login', _text(origin), _text(username), clear, scheme))
+    if cookies and os.path.isfile(cookies):
+        version = _cookies_version(cookies)
+        for host, name, enc in _chromium_rows(
+                cookies, 'cookies', ('host_key', 'name', 'encrypted_value')):
+            if not enc:
+                continue
+            clear, scheme = decrypt_value(bytes(enc), key=key, mk_pool=pool)
+            if clear is not None and scheme in ('v10', 'v20'):
+                clear = strip_cookie_host_hash(clear, version)
+            records.append(_record('cookie', _text(host), _text(name), clear, scheme))
+    return key, info.get('app_bound'), records
+
+
+def _record(kind, ident, name, clear, scheme):
+    return {'kind': kind, 'id': ident, 'name': name, 'scheme': scheme,
+            'value': clear.decode('utf-8', 'replace') if clear is not None else None}
 
 
 def _chromium_rows(db_path, table, columns):
@@ -261,32 +293,28 @@ def _text(value):
 
 
 def cmd_chromium(args):
-    pool, key, info = _chromium_key(args)
-    print('os_crypt key: %s  app_bound=%s'
-          % (_fp(key) if key else 'NOT RECOVERED', info.get('app_bound')))
-    out_records = []
-    if args.login_data:
-        for origin, username, pwv in _chromium_rows(
-                args.login_data, 'logins', ('origin_url', 'username_value', 'password_value')):
-            if not pwv:
-                continue
-            clear, scheme = decrypt_value(bytes(pwv), key=key, mk_pool=pool)
-            _emit('login', _text(origin), _text(username), clear, scheme, out_records)
-    if args.cookies:
-        version = _cookies_version(args.cookies)
-        for host, name, enc in _chromium_rows(
-                args.cookies, 'cookies', ('host_key', 'name', 'encrypted_value')):
-            if not enc:
-                continue
-            clear, scheme = decrypt_value(bytes(enc), key=key, mk_pool=pool)
-            if clear is not None and scheme in ('v10', 'v20'):
-                clear = strip_cookie_host_hash(clear, version)
-            _emit('cookie', _text(host), _text(name), clear, scheme, out_records)
+    key, app_bound, records = _decrypt_chromium_profile(
+        args.local_state, args.login_data, args.cookies, _user_pool(args))
+    _print_chromium(key, app_bound, records)
     if args.out:
         with open(args.out, 'w', encoding='utf-8') as handle:
-            json.dump(out_records, handle, indent=2)
-        print('wrote %d value(s) to %s' % (len(out_records), args.out))
+            json.dump(records, handle, indent=2)
+        print('wrote %d value(s) to %s' % (len(records), args.out))
     return 0 if key else 1
+
+
+def _print_chromium(key, app_bound, records):
+    print('os_crypt key: %s  app_bound=%s'
+          % (_fp(key) if key else 'NOT RECOVERED', app_bound))
+    for rec in records:
+        if rec['value'] is not None:
+            print('%-7s %-32s %-22s %-5s pw_len=%d pw_fp=%s'
+                  % (rec['kind'], rec['id'][:32], rec['name'][:22], rec['scheme'],
+                     len(rec['value']), _fp(rec['value'].encode('utf-8', 'replace'))))
+        else:
+            print('%-7s %-32s %-22s %-5s %s'
+                  % (rec['kind'], rec['id'][:32], rec['name'][:22], rec['scheme'],
+                     'app-bound (v20)' if rec['scheme'] == 'v20' else 'not decrypted'))
 
 
 def _cookies_version(path):
@@ -300,18 +328,128 @@ def _cookies_version(path):
         con.close()
 
 
-def _emit(kind, ident, name, clear, scheme, out_records):
-    if clear is not None:
-        value = clear.decode('utf-8', 'replace')
-        print('%-7s %-32s %-22s %-5s pw_len=%d pw_fp=%s'
-              % (kind, ident[:32], name[:22], scheme, len(value),
-                 _fp(value.encode('utf-8', 'replace'))))
-        out_records.append({'kind': kind, 'id': ident, 'name': name,
-                            'scheme': scheme, 'value': value})
-    else:
-        print('%-7s %-32s %-22s %-5s %s'
-              % (kind, ident[:32], name[:22], scheme,
-                 'app-bound (v20)' if scheme == 'v20' else 'not decrypted'))
+def _group_hives(paths):
+    """{install root: {'SYSTEM': path, 'SECURITY': path}} from extracted hive paths."""
+    installs = {}
+    for path in paths:
+        norm = path.replace('\\', '/')
+        cut = norm.lower().find('/windows/system32/config/')
+        root = norm[:cut] if cut != -1 else norm
+        name = norm.rsplit('/', 1)[-1].upper()
+        if name in ('SYSTEM', 'SECURITY'):
+            installs.setdefault(root, {})[name] = path
+    return installs
+
+
+def _group_protect(paths):
+    """{SID: set(master-key directories)} from extracted master-key file paths."""
+    dirs = {}
+    for path in paths:
+        parent = path.replace('\\', '/').rsplit('/', 1)[0]
+        sid = parent.rsplit('/', 1)[-1]
+        if sid.upper().startswith('S-1-'):
+            dirs.setdefault(sid, set()).add(parent)
+    return dirs
+
+
+def _group_vault(paths):
+    """Sorted Vault directories (the parents of Policy.vpol and *.vcrd)."""
+    return sorted({path.replace('\\', '/').rsplit('/', 1)[0] for path in paths})
+
+
+def _group_chromium(paths):
+    """(local_states {user data dir: Local State}, [login paths], [cookie paths])."""
+    local_states, logins, cookies = {}, [], []
+    for path in paths:
+        norm = path.replace('\\', '/')
+        base = norm.rsplit('/', 1)[-1].lower()
+        if base == 'local state':
+            local_states[norm.rsplit('/', 1)[0]] = path
+        elif base in ('login data', 'login data for account'):
+            logins.append(path)
+        elif base == 'cookies':
+            cookies.append(path)
+    return local_states, logins, cookies
+
+
+def cmd_triage(args):
+    import shutil
+    import tempfile
+    from .image import extract_dpapi_tree, HIVE, PROTECT, VAULT, CHROMIUM
+
+    workdir = args.extract_to or tempfile.mkdtemp(prefix='dpapiprobe-')
+    log = (lambda msg: print('  ' + msg, file=sys.stderr)) if args.verbose else None
+    try:
+        inv = extract_dpapi_tree(args.image, workdir, password=args.image_password,
+                                 private_key=args.image_key, on_log=log)
+        installs = _group_hives(inv[HIVE])
+        protect = _group_protect(inv[PROTECT])
+        tbal = []
+        for hives in installs.values():
+            if hives.get('SYSTEM') and hives.get('SECURITY'):
+                tbal.extend(_tbal_hashes(hives['SYSTEM'], hives['SECURITY']))
+
+        pool = MasterKeyPool()
+        candidates = []
+        for sid, directories in protect.items():
+            for directory in directories:
+                pool.load_directory(directory)
+            if args.password:
+                candidates.extend(user_master_key_candidates(sid, password=args.password))
+            for _user, sha1 in tbal:
+                candidates.extend(user_master_key_candidates(sid, sha1_hash=sha1))
+        if candidates:
+            pool.decrypt_all(candidates)
+
+        print('image: %s' % args.image)
+        print('accounts with master keys: %d; TBAL secrets: %d' % (len(protect), len(tbal)))
+        for username, sha1 in tbal:
+            print('  TBAL %-20s sha1_fp=%s' % (username or '(unknown)', _fp(sha1)))
+
+        collected = {'vault': [], 'chromium': []}
+        for vault_dir in _group_vault(inv[VAULT]):
+            creds = _decrypt_vault_dir(vault_dir, pool)
+            if creds:
+                print('vault %s:' % _rel(vault_dir, workdir))
+                _print_creds(creds)
+                collected['vault'].extend(creds)
+
+        local_states, logins, cookies = _group_chromium(inv[CHROMIUM])
+
+        def _udd(store):
+            best = None
+            for udd in local_states:
+                if store.startswith(udd + '/') and (best is None or len(udd) > len(best)):
+                    best = udd
+            return best
+
+        for store in sorted(logins) + sorted(cookies):
+            udd = _udd(store)
+            if udd is None:
+                continue
+            is_login = store in logins
+            key, app_bound, records = _decrypt_chromium_profile(
+                local_states[udd], store if is_login else None,
+                None if is_login else store, pool)
+            if records:
+                print('chromium %s:' % _rel(store, workdir))
+                _print_chromium(key, app_bound, records)
+                collected['chromium'].extend(records)
+
+        if args.out:
+            with open(args.out, 'w', encoding='utf-8') as handle:
+                json.dump(collected, handle, indent=2)
+            print('wrote recovered cleartext to %s' % args.out)
+        return 0
+    finally:
+        if args.extract_to is None:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _rel(path, workdir):
+    norm = path.replace('\\', '/')
+    marker = workdir.replace('\\', '/') + '/'
+    return norm.split(marker, 1)[-1] if marker in norm else norm
 
 
 def build_parser():
@@ -394,6 +532,17 @@ def build_parser():
     p.add_argument('--cookies', help='a Cookies database to decrypt')
     p.add_argument('--out', help='write recovered values (cleartext) as JSON here')
     p.set_defaults(func=cmd_chromium)
+
+    p = sub.add_parser('triage',
+                       help='open a disk image (E01/raw/AFF4/...) and decrypt everything found')
+    p.add_argument('--image', required=True, help='the disk image to read (read only)')
+    p.add_argument('--password', help='an account password to try on the user master keys')
+    p.add_argument('--image-password', help='password for an encrypted image')
+    p.add_argument('--image-key', help='private-key file for an encrypted image')
+    p.add_argument('--extract-to', help='keep the extracted files here (default: a temp dir)')
+    p.add_argument('--out', help='write recovered credentials (cleartext) as JSON here')
+    p.add_argument('--verbose', action='store_true', help='log files skipped during extraction')
+    p.set_defaults(func=cmd_triage)
 
     return parser
 

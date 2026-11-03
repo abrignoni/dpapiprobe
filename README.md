@@ -1,10 +1,10 @@
 # dpapiprobe
 
 An offline reader for Windows DPAPI protected data. Point it at registry hives and
-master-key files pulled from a disk image and it recovers LSA secrets, decrypts SYSTEM and
-user master keys, and unprotects DPAPI blobs, including the ones wrapped inside Credential
-Manager and Vault containers and the Chromium browser key store (saved passwords and
-cookies). No live system, no agent, no network.
+master-key files pulled from a disk image, or at the image itself, and it recovers LSA
+secrets, decrypts SYSTEM and user master keys, and unprotects DPAPI blobs, including the
+ones wrapped inside Credential Manager and Vault containers and the Chromium browser key
+store (saved passwords and cookies). No live system, no agent, no network.
 
 It is pure Python and depends only on PyCryptodome and python-registry, both permissive
 licences. It is MIT, so a tool that ships frozen binaries can vendor it. That is the
@@ -84,6 +84,23 @@ file you name.
 
 `--protect` can be given more than once, for example the `S-1-5-18` directory and its
 `User` subdirectory.
+
+## Reading a disk image directly
+
+Instead of files already pulled from an image, point it at the image and it finds them
+itself, through the vendored `ewfprobe` and `qnxprobe` readers (E01, raw, AFF4, AD-encrypted
+and split images; the NTFS volume and the other filesystems qnxprobe walks). No extra
+dependency: both readers are pure Python and ship in the package. `triage` opens the image
+read only, locates the hives, master keys, Vault and Chromium stores across every volume,
+and decrypts what the account's password or its ARSO/TBAL secret opens:
+
+```bash
+dpapiprobe triage --image disk.E01 [--password PW] [--out creds.json]
+```
+
+The default output names the accounts, the TBAL secrets and the recovered credentials by
+site and user; cleartext is written only to the `--out` file. `--extract-to DIR` keeps the
+files it pulled, and `--image-password` / `--image-key` open an encrypted image.
 
 ## Library
 
