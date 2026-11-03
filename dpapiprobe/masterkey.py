@@ -4,11 +4,46 @@ A master-key file holds up to four sections (master key, backup key, credential
 history, domain key). Only the master-key section is decrypted here; it yields the
 64-byte key that unprotects blobs created by that key's GUID.
 """
+import hashlib
 import hmac
 import os
 import struct
 
+from Crypto.Hash import MD4
+
 from . import primitives as P
+
+
+def _as_bytes(value):
+    return value if isinstance(value, (bytes, bytearray)) else bytes.fromhex(value)
+
+
+def user_master_key_candidates(sid, password=None, nt_hash=None, sha1_hash=None):
+    """Pre-key candidates for USER master keys, salted with the account SID.
+
+    The modern local scheme protects a user master key under ``SHA1(UTF-16LE password)``;
+    the older NTLM scheme uses the NT hash (MD4 of the same). Each is folded with the
+    account SID by ``HMAC-SHA1(hash, UTF-16LE(SID) + b'\\x00\\x00')``. A cleartext
+    ``password`` yields both the SHA-1 and NT candidates; ``sha1_hash`` or ``nt_hash``
+    (16 raw bytes or hex) can be given directly, which is how a hash recovered from an
+    ARSO/TBAL secret opens the user's master keys without the password. The SHA-1
+    candidate is the one that opens Windows 10 and later user master keys.
+    """
+    salt = sid.encode('utf-16-le') + b'\x00\x00'
+    candidates = []
+    if sha1_hash is not None:
+        candidates.append(hmac.new(_as_bytes(sha1_hash), salt, 'sha1').digest())
+    if password is not None:
+        pwd_sha1 = hashlib.sha1(password.encode('utf-16-le')).digest()
+        candidates.append(hmac.new(pwd_sha1, salt, 'sha1').digest())
+    nt = None
+    if nt_hash is not None:
+        nt = _as_bytes(nt_hash)
+    elif password is not None:
+        nt = MD4.new(password.encode('utf-16-le')).digest()
+    if nt is not None:
+        candidates.append(hmac.new(nt, salt, 'sha1').digest())
+    return candidates
 
 
 def master_key_guid(mk_file):
