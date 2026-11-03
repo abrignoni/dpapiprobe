@@ -1,9 +1,10 @@
 # dpapiprobe
 
 An offline reader for Windows DPAPI protected data. Point it at registry hives and
-master-key files pulled from a disk image and it recovers LSA secrets, decrypts SYSTEM
-master keys, and unprotects DPAPI blobs, including the ones wrapped inside Credential
-Manager and Vault containers. No live system, no agent, no network.
+master-key files pulled from a disk image and it recovers LSA secrets, decrypts SYSTEM and
+user master keys, and unprotects DPAPI blobs, including the ones wrapped inside Credential
+Manager and Vault containers and the Chromium browser key store (saved passwords and
+cookies). No live system, no agent, no network.
 
 It is pure Python and depends only on PyCryptodome and python-registry, both permissive
 licences. It is MIT, so a tool that ships frozen binaries can vendor it. That is the
@@ -12,8 +13,7 @@ MIT project that distributes binaries cannot take as a runtime dependency.
 
 ## Scope
 
-This release covers the SYSTEM context, which needs only the boot key and no user
-password:
+**SYSTEM context** (needs only the boot key, no user password):
 
 - Boot key (syskey) from the SYSTEM hive.
 - All LSA secrets from the SECURITY hive, decrypted: `DPAPI_SYSTEM`, `$MACHINE.ACC`,
@@ -21,26 +21,26 @@ password:
 - SYSTEM master keys, decrypted under `DPAPI_SYSTEM`.
 - DPAPI blobs, with optional entropy.
 - The Credential Manager files (`Credentials\<hash>`) and Vault policy files
-  (`Policy.vpol`) that wrap a blob inside a container header, and the outer structure of
-  Vault credential records (`*.vcrd`).
+  (`Policy.vpol`) that wrap a blob inside a container header.
 
-Not in this release:
+**User context** (needs the account's cleartext password or its SHA-1, or its ARSO/TBAL
+secret; the SAM NT hash alone does not open Windows 10 and 11 user master keys):
 
-- User context (Chromium passwords and cookies, user Credential Manager and Vault
-  records, user master keys). Those need the account's cleartext password or its SHA-1,
-  not the SAM NT hash, and are the next phase.
-- Vault credential record (`*.vcrd`) attribute decryption. The records that carry
-  attributes live in user vaults, so their decryption belongs with the user context; the
-  SYSTEM vaults hold only policy and schema files.
-- Pre-Vista (Windows XP / 2003) DPAPI, domain backup keys, CNG and smartcard protectors.
+- User master keys, from the password, its SHA-1, or the account's ARSO/TBAL secret
+  recovered with the boot key alone.
+- Vault credential records (`*.vcrd`) and the Internet Explorer / Web Credentials schema:
+  the resource, user name and password.
+- Chromium (Chrome, Edge, Brave, Vivaldi, Opera) os_crypt: the Local State key, and the
+  `v10` AES-GCM saved passwords (Login Data) and cookies (Cookies), with the cookie
+  host-hash prefix stripped at Cookies schema version 24 and later.
+
+Not covered: pre-Vista (Windows XP / 2003) DPAPI, domain backup keys, CNG and smartcard
+protectors, and Chrome `v20` App-Bound Encryption (reported, not decrypted: the final key
+is held by Chrome's elevation service and is version-specific).
 
 ## Install
 
-```bash
-pip install dpapiprobe
-```
-
-Or from a checkout:
+From a checkout (no PyPI package yet):
 
 ```bash
 pip install -e .
@@ -63,6 +63,24 @@ dpapiprobe credential --system SYSTEM --security SECURITY \
 dpapiprobe vault-policy --system SYSTEM --security SECURITY \
     --protect Protect/S-1-5-18 --in Policy.vpol
 ```
+
+User context (the account's password, its SHA-1, or `--tbal` with the hives):
+
+```bash
+dpapiprobe tbal --system SYSTEM --security SECURITY
+dpapiprobe user-masterkeys --sid S-1-5-21-... \
+    --protect "Users/<u>/AppData/Roaming/Microsoft/Protect/S-1-5-21-..." --password PW
+dpapiprobe vault --sid S-1-5-21-... --protect "Protect/S-1-5-21-..." --tbal \
+    --system SYSTEM --security SECURITY --vault-dir "Vault/<GUID>" [--out creds.json]
+dpapiprobe chromium --sid S-1-5-21-... --protect "Protect/S-1-5-21-..." --password PW \
+    --local-state "User Data/Local State" \
+    --login-data "User Data/Default/Login Data" \
+    [--cookies "User Data/Default/Network/Cookies"] [--out values.json]
+```
+
+Recovered passwords and cookie values are never printed; the default output is the site,
+user name and a length and fingerprint, and the cleartext is written only to the `--out`
+file you name.
 
 `--protect` can be given more than once, for example the `S-1-5-18` directory and its
 `User` subdirectory.
