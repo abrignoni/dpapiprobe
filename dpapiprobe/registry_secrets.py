@@ -3,12 +3,21 @@
 Vista+ LSA encryption only (the AES ``Policy\\PolEKList`` scheme). The pre-Vista
 RC4 ``PolSecretEncryptionKey`` layout (Windows XP / 2003) is a different era and is
 out of scope here; those hives raise :class:`UnsupportedHive`.
+
+The hives are read with the vendored regfprobe, as they are stored: transaction logs
+beside a hive are not applied. A missing key raises ``regfprobe.KeyNotFound`` (except
+``Policy\\PolEKList``, which raises :class:`UnsupportedHive`), and a value whose data
+cannot be read raises ``regfprobe.RegfError``.
 """
 import hashlib
 import struct
 
 from Crypto.Cipher import AES
-from Registry import Registry
+
+try:
+    from .vendor import regfprobe           # this repository: dpapiprobe/vendor/regfprobe.py
+except ImportError:
+    from .. import regfprobe  # noqa  pylint: disable=relative-beyond-top-level  # a tool that copies this package beside its own regfprobe.py
 
 # The scrambled boot key is stored across four LSA subkey class names; this permutation
 # unscrambles the 16 assembled bytes into the real boot key (syskey).
@@ -21,18 +30,29 @@ class UnsupportedHive(Exception):
     """Raised when a hive uses a layout this module does not implement."""
 
 
-def _current_control_set(reg):
-    return 'ControlSet%03d' % reg.open('Select').value('Current').value()
+def _open(path):
+    """A hive read as it is stored (no transaction log applied)."""
+    return regfprobe.Hive(path, recover=False)
+
+
+def _data(value):
+    """A value's stored bytes; raises when the hive cannot give them."""
+    raw = value.raw
+    if value.unreadable:
+        raise regfprobe.RegfError(f'value {value.name or "(default)"}: {"; ".join(value.notes)}')
+    return raw
+
+
+def _current_control_set(hive):
+    raw = _data(hive.open_key('Select').value('Current'))
+    return 'ControlSet%03d' % int.from_bytes(raw[:4].ljust(4, b'\x00'), 'little')
 
 
 def get_bootkey(system_path):
     """The 16-byte boot key (syskey) from a SYSTEM hive."""
-    with open(system_path, 'rb') as handle:
-        reg = Registry.Registry(handle)
-        lsa = reg.open(_current_control_set(reg) + '\\Control\\Lsa')
-        scrambled = b''.join(
-            bytes.fromhex(lsa.subkey(name)._nkrecord.classname())  # pylint: disable=protected-access
-            for name in _BOOTKEY_SUBKEYS)
+    hive = _open(system_path)
+    lsa = hive.open_key(_current_control_set(hive) + '\\Control\\Lsa')
+    scrambled = b''.join(bytes.fromhex(lsa.subkey(name).class_name) for name in _BOOTKEY_SUBKEYS)
     return bytes(scrambled[_BOOTKEY_PERM[i]] for i in range(16))
 
 
@@ -53,10 +73,10 @@ def _sha256_rounds(key, value, rounds=1000):
     return digest.digest()
 
 
-def _lsa_key(reg, bootkey):
+def _lsa_key(hive, bootkey):
     try:
-        pol = reg.open('Policy\\PolEKList').value('').value()
-    except Registry.RegistryKeyNotFoundException as exc:
+        pol = _data(hive.open_key('Policy\\PolEKList').value(''))
+    except regfprobe.KeyNotFound as exc:
         raise UnsupportedHive(
             'no Policy\\PolEKList (pre-Vista RC4 LSA layout is not supported)') from exc
     return _aes_unwrap(_sha256_rounds(bootkey, pol[28:60]), pol[60:])[68:100]
@@ -75,24 +95,23 @@ def get_lsa_secrets(security_path, bootkey):
     and any other secret present. Secrets with no current value are skipped.
     """
     secrets = {}
-    with open(security_path, 'rb') as handle:
-        reg = Registry.Registry(handle)
-        lsa_key = _lsa_key(reg, bootkey)
+    hive = _open(security_path)
+    lsa_key = _lsa_key(hive, bootkey)
+    try:
+        root = hive.open_key('Policy\\Secrets')
+    except regfprobe.KeyNotFound:
+        return secrets
+    for sub in root.subkeys():
         try:
-            root = reg.open('Policy\\Secrets')
-        except Registry.RegistryKeyNotFoundException:
-            return secrets
-        for sub in root.subkeys():
-            try:
-                record = sub.subkey('CurrVal').value('').value()
-            except Registry.RegistryKeyNotFoundException:
-                continue
-            if not record or len(record) < 60:
-                continue
-            try:
-                secrets[sub.name()] = _decrypt_secret(lsa_key, record)
-            except (ValueError, struct.error):
-                continue
+            record = _data(sub.subkey('CurrVal').value(''))
+        except regfprobe.KeyNotFound:
+            continue
+        if not record or len(record) < 60:
+            continue
+        try:
+            secrets[sub.name] = _decrypt_secret(lsa_key, record)
+        except (ValueError, struct.error):
+            continue
     return secrets
 
 

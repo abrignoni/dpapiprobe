@@ -6,8 +6,9 @@ secrets, decrypts SYSTEM and user master keys, and unprotects DPAPI blobs, inclu
 ones wrapped inside Credential Manager and Vault containers and the Chromium browser key
 store (saved passwords and cookies). No live system, no agent, no network.
 
-It is pure Python and depends only on PyCryptodome and python-registry, both permissive
-licences. It is MIT, so a tool that ships frozen binaries can vendor it. That is the
+It is pure Python and depends only on PyCryptodome, a permissive licence. The SYSTEM and
+SECURITY hives are read with the vendored regfprobe (`dpapiprobe/vendor/regfprobe.py`), as
+they are stored: transaction logs beside a hive are not applied. It is MIT, so a tool that ships frozen binaries can vendor it. That is the
 reason it exists: the maintained offline DPAPI library, dpapick3, is GPL-3.0, which an
 MIT project that distributes binaries cannot take as a runtime dependency.
 
@@ -131,6 +132,13 @@ the repo: a known-plaintext round trip minted on a Windows 11 lab VM (including 
 optional-entropy path), and real images whose recovered keys matched an independent
 decryptor. The registry-reader tests run against a local hive set when you point
 `DPAPIPROBE_TEST_SYSTEM` and `DPAPIPROBE_TEST_SECURITY` at one; no hive ships here.
+
+Up to 0.5.1 the hives were read with python-registry. 0.6.0 reads them with the vendored
+regfprobe. On 2026-11-04 both versions were run on the 16 SYSTEM and SECURITY pairs extracted
+from ten Windows images in the author's corpus: the 11 that decrypt gave the same boot key and
+the same 30 secrets (compared by hash), the Windows XP pair was refused as a pre-Vista hive by
+both, and four pairs of empty (0-byte) RegBack copies failed to open in both, with a different
+exception class (`struct.error` from python-registry, `RegfError` from regfprobe).
 
 ```bash
 pip install -e . pytest
