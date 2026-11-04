@@ -23,6 +23,18 @@
       "licence": "MIT",
       "banner": true,
       "note": "Copied verbatim below its banner. EWF/E01 and AFF4/AD1 container reader, imported by qnxprobe. Fix upstream and re-vendor; edits here are reverted by the next sync."
+    },
+    {
+      "path": "dpapiprobe/vendor/regfprobe.py",
+      "name": "regfprobe",
+      "version": "0.1.0",
+      "upstream": "https://github.com/abrignoni/regfprobe",
+      "upstream_file": "regfprobe.py",
+      "commit": "dc04c42bd3dc97d02f1ef73cc0ae478d476f304d",
+      "commit_date": "2026-11-04T15:00:11-05:00",
+      "licence": "MIT",
+      "banner": true,
+      "note": "Copied verbatim below its banner. Registry hive reader (regf), standard library only; registry_secrets reads the SYSTEM and SECURITY hives with it. Fix upstream and re-vendor; edits here are reverted by the next sync."
     }
   ]
 }

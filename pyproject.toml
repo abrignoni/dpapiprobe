@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dpapiprobe"
-version = "0.5.1"
+version = "0.6.0"
 description = "Offline Windows DPAPI decryption library (clean-room, MIT)"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -19,7 +19,6 @@ classifiers = [
 ]
 dependencies = [
     "pycryptodome>=3.10",
-    "python-registry>=1.3",
 ]
 
 [project.urls]
