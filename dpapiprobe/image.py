@@ -6,12 +6,24 @@ qnxprobe/ewfprobe readers, walks every filesystem volume it finds, and copies ou
 files the SYSTEM- and user-context chains use: the SYSTEM and SECURITY hives, the SYSTEM and
 per-user DPAPI master keys, the Credential Manager and Vault containers, and the Chromium
 browser key store and its Login Data and Cookies databases. The image is read only.
+Logical evidence (L01, Lx01, AD1) holds no volumes, so the same files are matched among
+its entries and copied into a new ``logical-*`` folder.
 
 Extracted-file input is unaffected: this module is used only when a command is given an
 image. The files are written under a destination directory, keeping their path inside the
 volume, so the rest of the library and CLI read them exactly as they read a staged tree.
 """
+import hashlib
 import os
+import re
+import tempfile
+import unicodedata
+
+# AD1 entry types that hold no file's content (as the LEAPP cores' raw_image.py), plus D,
+# an NTFS alternate data stream
+_AD1_NOT_FILES = ('6', 'F', '10', '61', 'D')
+
+_WINDOWS_RESERVED = re.compile(r'(?i)con|prn|aux|nul|conin\$|conout\$|(com|lpt)[1-9\u00b9\u00b2\u00b3]')
 
 # file categories the chain consumes, decided from a volume-relative path
 HIVE = 'hive'
@@ -44,18 +56,25 @@ def _category(rel):
 
 
 def extract_dpapi_tree(image_path, dest_dir, password=None, private_key=None,
-                       on_log=None, max_file_bytes=256 * 1024 * 1024):
+                       on_log=None, max_file_bytes=256 * 1024 * 1024, on_warning=None):
     """Walk every volume of the image and copy the DPAPI-relevant files under dest_dir.
 
     Returns an inventory dict with one list of extracted file paths per category. Paths are
     kept relative to the volume (prefixed with the volume name so two volumes do not
-    collide), so the files sit under dest_dir as they sat in the image. The image is opened
-    read only; nothing is written back to it.
+    collide), so the files sit under dest_dir as they sat in the image. Logical evidence has
+    no volumes and goes into a new folder of dest_dir (``_extract_logical``). The image is
+    opened read only; nothing is written back to it. ``on_warning`` receives what a logical
+    source held and could not be extracted, which ``on_log`` receives when it is not given.
     """
     from .vendor import qnxprobe          # heavy; loaded only when an image is read
     log = on_log or (lambda _msg: None)
-    fh = qnxprobe.open_image(image_path, password=password, private_key=private_key)
     inventory = {HIVE: [], PROTECT: [], CREDENTIAL: [], VAULT: [], CHROMIUM: []}
+    try:
+        fh = qnxprobe.open_image(image_path, password=password, private_key=private_key)
+    except qnxprobe.LogicalEvidence:
+        _extract_logical(image_path, dest_dir, password, private_key, inventory, log,
+                         max_file_bytes, on_warning)
+        return inventory
     s_ifmt, s_ifdir = 0o170000, 0o040000     # format-bits mask, directory, as qnxprobe uses
     for vol in qnxprobe.volumes(fh):
         walker = vol.get('walker')
@@ -86,6 +105,190 @@ def extract_dpapi_tree(image_path, dest_dir, password=None, private_key=None,
             if written:
                 inventory[category].append(dest)
     return inventory
+
+
+def _safe_parts(names):
+    """An entry's stored names as path parts that stay under the destination on any OS.
+
+    Logical evidence records paths from the machine that collected it, so a name can hold
+    a separator, a drive letter, a parent reference, a character or name Windows cannot
+    create, or an unpaired surrogate no filesystem API can encode.
+    """
+    parts = []
+    for name in names:
+        for part in re.split(r'[\\/]', name):
+            if part in ('', '.'):
+                continue
+            part = re.sub('[:<>"|?*\x00-\x1f\ud800-\udfff]', '_', part)
+            if not part.strip(' .'):
+                part = '_'
+            else:
+                # Windows drops trailing dots and spaces, which would merge two names
+                part = re.sub(r'[ .]+$', lambda m: '_' * len(m.group()), part)
+            if _WINDOWS_RESERVED.fullmatch(part.split('.')[0].rstrip(' ')):
+                part = '_' + part
+            parts.append(part)
+    return parts
+
+
+def _copy_entry(img, entry, dest, run):
+    """Copy an entry to a path nothing holds yet. Returns 'ok', 'taken' when something holds
+    the path, 'unreadable' when the entry cannot be read, 'damaged' when its bytes do not
+    match the hash the evidence stores, 'bad-chunk' when it stores none and a chunk behind
+    it failed its checksum, or 'unwritable' when the copy cannot be made. The bytes are read in full first, so an unreadable entry leaves no
+    folder behind that would stand in another entry's way."""
+    scratch = os.path.join(run, '.copying')
+    kind, stored = (('md5', entry.md5) if getattr(entry, 'md5', None)
+                    else ('sha1', getattr(entry, 'sha1', None)))
+    digest = hashlib.new(kind) if stored else None
+    reading = True
+    try:
+        with img.open_entry(entry) as src:
+            reading = False
+            with open(scratch, 'wb') as handle:
+                while True:
+                    reading = True
+                    chunk = src.read(1 << 20)
+                    reading = False
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                    if digest:
+                        digest.update(chunk)
+    except Exception:  # pylint: disable=broad-exception-caught
+        if os.path.exists(scratch):
+            os.remove(scratch)
+        return 'unreadable' if reading else 'unwritable'
+    if digest and digest.hexdigest() != stored.lower():
+        os.remove(scratch)
+        return 'damaged'
+    if not digest and _reader_saw_damage(img, entry):
+        os.remove(scratch)
+        return 'bad-chunk'
+    try:
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, 'xb'):                     # claims the name; never overwrites
+            pass
+    except Exception:  # pylint: disable=broad-exception-caught
+        os.remove(scratch)
+        # a parent that is a file, or on Windows a folder at this name, raises its own error
+        taken = os.path.lexists(dest) or any(
+            os.path.isfile(parent) for parent in _parents(dest, run))
+        _remove_empty_parents(dest, run)
+        return 'taken' if taken else 'unwritable'
+    os.replace(scratch, dest)
+    return 'ok'
+
+
+def _reader_saw_damage(img, entry):
+    """For an entry with no stored hash: whether a chunk behind it failed its checksum. The
+    reader hands such a chunk back and records it, as its own export checks afterwards."""
+    check = getattr(img, '_entry_damage', None)
+    if check is None:
+        return False
+    try:
+        return bool(check(entry))
+    except Exception:  # pylint: disable=broad-exception-caught
+        return True
+
+
+def _parents(path, run):
+    """The folders above path, up to but not including the run's own folder."""
+    parent = os.path.dirname(path)
+    while parent != run and parent != os.path.dirname(parent):
+        yield parent
+        parent = os.path.dirname(parent)
+
+
+def _remove_empty_parents(path, run):
+    for parent in _parents(path, run):
+        try:
+            os.rmdir(parent)
+        except OSError:
+            return
+
+
+def _extract_logical(image_path, dest_dir, password, private_key, inventory, log,
+                     max_file_bytes, warn=None):
+    """Copy the DPAPI-relevant files of an L01, Lx01 or AD1 into a new folder of dest_dir.
+
+    An AD1's slack, index, attribute and stream records and folders whose content was not
+    collected hold no file, so they are skipped. An entry FTK Imager lists as deleted is left
+    out too, with a warning when it sits at a path the chain uses.
+    Each run has its own folder, because the CLI loads whole directories and must not read
+    another run's files. Under it, files/ holds what the chain reads, by real name. When
+    entries want one path, the first readable one takes it, in this order: no dl time
+    before a dl time, names stored as they are before a name holding a separator, deeper
+    paths before a file that sits where they need a folder, then the first stored. An entry
+    with a dl time never takes the path of a file without one, even one that is too large
+    or unreadable. The others go to other-copies/<position>/,
+    outside the inventory, so nothing reads them as the current file.
+    """
+    from .vendor import ewfprobe
+    warn = warn or log
+    with ewfprobe.open_ewf(image_path, password=password, private_key=private_key) as img:
+        os.makedirs(dest_dir, exist_ok=True)
+        run = tempfile.mkdtemp(prefix='logical-', dir=dest_dir)
+        root = os.path.join(run, 'files')
+        ad1 = img.format == ewfprobe.FORMAT_AD1
+        wanted, live = [], set()
+        for position, entry in enumerate(img.logical_entries):
+            if ad1 and entry.type_code in _AD1_NOT_FILES:
+                continue
+            if entry.is_folder and (ad1 or not entry.size or not entry.content_collected):
+                continue
+            parts = _safe_parts(entry.names)
+            if not parts:
+                continue
+            rel = '/'.join(parts)
+            category = _category('logical/' + rel)     # the prefix stands for a volume name
+            if category is None:
+                continue
+            if ad1 and entry.is_deleted:
+                warn('left out %s: FTK Imager lists it as deleted' % rel)
+                continue
+            has_dl = bool((entry.times or {}).get('dl'))
+            if not has_dl:
+                live.add(_same_path_key(rel))
+            if entry.size > max_file_bytes:
+                warn('skip oversized %s (%s bytes)' % (rel, entry.size))
+            elif not entry.size:
+                # EnCase stores an empty file with one placeholder byte, as the reader reads it
+                stored = sum(length for _offset, length in getattr(entry, 'extents', None) or ())
+                if stored > 1 or getattr(entry, 'duplicate_offset', None) is not None:
+                    warn('left out %s: it records stored data and no size' % rel)
+            else:
+                joined = any(re.search(r'[\\/]', name) for name in entry.names)
+                wanted.append((has_dl, joined, -len(parts), position, entry, parts,
+                               category))
+        wanted.sort(key=lambda item: item[:4])
+        for has_dl, _joined, _depth, position, entry, parts, category in wanted:
+            rel = '/'.join(parts)
+            state = 'taken'
+            if not (has_dl and _same_path_key(rel) in live):
+                dest = os.path.join(root, *parts)
+                state = _copy_entry(img, entry, dest, run)
+                if state == 'ok':
+                    inventory[category].append(dest)
+            if state == 'taken':
+                other = os.path.join(run, 'other-copies', str(position), parts[-1])
+                state = _copy_entry(img, entry, other, run)
+                if state == 'ok':
+                    warn('entry %d shares the path %s and was not decrypted; it is in '
+                         'other-copies when --extract-to keeps the folder' % (position, rel))
+            if state == 'unreadable':
+                warn('could not read %s' % rel)
+            elif state == 'unwritable':
+                warn('could not write %s' % rel)
+            elif state == 'damaged':
+                warn('%s does not match the hash the evidence stores, so it was left out' % rel)
+            elif state == 'bad-chunk':
+                warn('%s holds a chunk that fails its checksum, so it was left out' % rel)
+
+
+def _same_path_key(rel):
+    """A path as a case-insensitive, normalising volume sees it."""
+    return unicodedata.normalize('NFC', rel).casefold()
 
 
 def _as_chunks(data):

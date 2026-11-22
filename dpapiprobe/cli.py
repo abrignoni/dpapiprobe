@@ -15,7 +15,9 @@ import hashlib
 import json
 import os
 import sqlite3
+import struct
 import sys
+from urllib.parse import quote
 
 from . import (
     CredentialFile,
@@ -206,6 +208,9 @@ def cmd_user_masterkeys(args):
     return _report_pool(_user_pool(args))
 
 
+_BAD_RECORD = (struct.error, ValueError, IndexError, KeyError, TypeError)
+
+
 def _decrypt_vault_dir(vault_dir, pool):
     """Recovered web credentials from one Vault directory as a list of dicts."""
     vpol_path = os.path.join(vault_dir, 'Policy.vpol')
@@ -217,15 +222,18 @@ def _decrypt_vault_dir(vault_dir, pool):
     if not aes_keys:
         return []
     out = []
-    for vcrd_path in sorted(glob.glob(os.path.join(vault_dir, '*.vcrd'))):
-        record = VaultCredential(_read(vcrd_path))
-        decrypted, _key = record.decrypt(aes_keys)
-        for clear in (decrypted or {}).values():
-            cred = parse_web_credential(clear)
-            if cred:
-                out.append({'schema': record.friendly_name, 'resource': cred['resource'],
-                            'user': cred['user'], 'password': cred['password'],
-                            'source': os.path.basename(vcrd_path), 'vault': vault_dir})
+    for vcrd_path in sorted(glob.glob(os.path.join(glob.escape(vault_dir), '*.vcrd'))):
+        try:
+            record = VaultCredential(_read(vcrd_path))
+            decrypted, _key = record.decrypt(aes_keys)
+            for clear in (decrypted or {}).values():
+                cred = parse_web_credential(clear)
+                if cred:
+                    out.append({'schema': record.friendly_name, 'resource': cred['resource'],
+                                'user': cred['user'], 'password': cred['password'],
+                                'source': os.path.basename(vcrd_path), 'vault': vault_dir})
+        except _BAD_RECORD as ex:
+            _warn_unread(os.path.basename(vcrd_path), ex)
     return out
 
 
@@ -239,7 +247,7 @@ def _print_creds(records):
 def cmd_vault(args):
     records = _decrypt_vault_dir(args.vault_dir, _user_pool(args))
     if not records:
-        print('no web credential recovered (user key or vault policy not available)',
+        print('no web credential recovered (user key or vault policy not available, or no record could be read)',
               file=sys.stderr)
     _print_creds(records)
     if args.out:
@@ -247,6 +255,15 @@ def cmd_vault(args):
             json.dump(records, handle, indent=2)
         print('wrote %d credential(s) to %s' % (len(records), args.out))
     return 0 if records else 1
+
+
+def _decrypt_row(value, key, pool, what):
+    """(clear, scheme) of one stored value. A malformed one stays a row, marked 'error'."""
+    try:
+        return decrypt_value(bytes(value), key=key, mk_pool=pool)
+    except _BAD_RECORD as ex:
+        _warn_unread(what, ex)
+        return None, 'error'
 
 
 def _decrypt_chromium_profile(local_state, login_data, cookies, pool):
@@ -259,7 +276,7 @@ def _decrypt_chromium_profile(local_state, login_data, cookies, pool):
                 login_data, 'logins', ('origin_url', 'username_value', 'password_value')):
             if not pwv:
                 continue
-            clear, scheme = decrypt_value(bytes(pwv), key=key, mk_pool=pool)
+            clear, scheme = _decrypt_row(pwv, key, pool, 'a login of %s' % _text(origin))
             records.append(_record('login', _text(origin), _text(username), clear, scheme))
     if cookies and os.path.isfile(cookies):
         version = _cookies_version(cookies)
@@ -267,7 +284,7 @@ def _decrypt_chromium_profile(local_state, login_data, cookies, pool):
                 cookies, 'cookies', ('host_key', 'name', 'encrypted_value')):
             if not enc:
                 continue
-            clear, scheme = decrypt_value(bytes(enc), key=key, mk_pool=pool)
+            clear, scheme = _decrypt_row(enc, key, pool, 'a cookie of %s' % _text(host))
             if clear is not None and scheme in ('v10', 'v20'):
                 clear = strip_cookie_host_hash(clear, version)
             records.append(_record('cookie', _text(host), _text(name), clear, scheme))
@@ -279,8 +296,18 @@ def _record(kind, ident, name, clear, scheme):
             'value': clear.decode('utf-8', 'replace') if clear is not None else None}
 
 
+def _readonly_uri(db_path):
+    """A read-only SQLite URI for a path, which may hold #, ? or %."""
+    path = os.path.abspath(db_path)
+    if os.sep == '\\':                            # a backslash is a name character elsewhere
+        path = path.replace('\\', '/')
+    if not path.startswith('/'):
+        path = '/' + path                          # a drive letter: file:///C:/...
+    return 'file://%s?mode=ro&immutable=1' % quote(os.fsencode(path), safe='/:')
+
+
 def _chromium_rows(db_path, table, columns):
-    con = sqlite3.connect('file:%s?mode=ro&immutable=1' % db_path, uri=True)
+    con = sqlite3.connect(_readonly_uri(db_path), uri=True)
     con.text_factory = bytes
     try:
         return con.execute('SELECT %s FROM %s' % (', '.join(columns), table)).fetchall()
@@ -318,7 +345,7 @@ def _print_chromium(key, app_bound, records):
 
 
 def _cookies_version(path):
-    con = sqlite3.connect('file:%s?mode=ro&immutable=1' % path, uri=True)
+    con = sqlite3.connect(_readonly_uri(path), uri=True)
     try:
         row = con.execute("SELECT value FROM meta WHERE key='version'").fetchone()
         return int(row[0]) if row and row[0] is not None else None
@@ -326,6 +353,17 @@ def _cookies_version(path):
         return None
     finally:
         con.close()
+
+
+def _parent(path):
+    """The folder holding a path, as this OS reads it: a backslash is a separator only on
+    Windows, and the folder has to exist when it is opened."""
+    return os.path.dirname(path)
+
+
+def _warn_unread(what, ex):
+    """Say what was left out, so a damaged record does not read as an empty one."""
+    print('could not read %s: %s' % (what, type(ex).__name__), file=sys.stderr)
 
 
 def _group_hives(paths):
@@ -345,8 +383,8 @@ def _group_protect(paths):
     """{SID: set(master-key directories)} from extracted master-key file paths."""
     dirs = {}
     for path in paths:
-        parent = path.replace('\\', '/').rsplit('/', 1)[0]
-        sid = parent.rsplit('/', 1)[-1]
+        parent = _parent(path)
+        sid = os.path.basename(parent)
         if sid.upper().startswith('S-1-'):
             dirs.setdefault(sid, set()).add(parent)
     return dirs
@@ -354,7 +392,7 @@ def _group_protect(paths):
 
 def _group_vault(paths):
     """Sorted Vault directories (the parents of Policy.vpol and *.vcrd)."""
-    return sorted({path.replace('\\', '/').rsplit('/', 1)[0] for path in paths})
+    return sorted({_parent(path) for path in paths})
 
 
 def _group_chromium(paths):
@@ -381,13 +419,19 @@ def cmd_triage(args):
     log = (lambda msg: print('  ' + msg, file=sys.stderr)) if args.verbose else None
     try:
         inv = extract_dpapi_tree(args.image, workdir, password=args.image_password,
-                                 private_key=args.image_key, on_log=log)
+                                 private_key=args.image_key, on_log=log,
+                                 on_warning=lambda msg: print('warning: ' + msg,
+                                                              file=sys.stderr))
         installs = _group_hives(inv[HIVE])
         protect = _group_protect(inv[PROTECT])
         tbal = []
         for hives in installs.values():
             if hives.get('SYSTEM') and hives.get('SECURITY'):
-                tbal.extend(_tbal_hashes(hives['SYSTEM'], hives['SECURITY']))
+                try:
+                    tbal.extend(_tbal_hashes(hives['SYSTEM'], hives['SECURITY']))
+                except Exception as ex:  # pylint: disable=broad-exception-caught
+                    _warn_unread('the SYSTEM or SECURITY hive in %s'
+                                 % _rel(os.path.dirname(hives['SYSTEM']), workdir), ex)
 
         pool = MasterKeyPool()
         candidates = []
@@ -399,7 +443,8 @@ def cmd_triage(args):
             for _user, sha1 in tbal:
                 candidates.extend(user_master_key_candidates(sid, sha1_hash=sha1))
         if candidates:
-            pool.decrypt_all(candidates)
+            pool.decrypt_all(candidates, on_error=lambda guid, ex: _warn_unread(
+                'master key %s' % guid, ex))
 
         print('image: %s' % args.image)
         print('accounts with master keys: %d; TBAL secrets: %d' % (len(protect), len(tbal)))
@@ -408,29 +453,51 @@ def cmd_triage(args):
 
         collected = {'vault': [], 'chromium': []}
         for vault_dir in _group_vault(inv[VAULT]):
-            creds = _decrypt_vault_dir(vault_dir, pool)
+            try:
+                creds = _decrypt_vault_dir(vault_dir, pool)
+            except Exception as ex:  # pylint: disable=broad-exception-caught
+                _warn_unread('the vault at %s' % _rel(vault_dir, workdir), ex)
+                continue
             if creds:
                 print('vault %s:' % _rel(vault_dir, workdir))
                 _print_creds(creds)
                 collected['vault'].extend(creds)
 
         local_states, logins, cookies = _group_chromium(inv[CHROMIUM])
+        bad_states = set()
+        for udd, state_path in local_states.items():
+            try:
+                with open(state_path, 'r', encoding='utf-8') as handle:
+                    os_crypt_key(json.load(handle), pool)
+            except Exception as ex:  # pylint: disable=broad-exception-caught
+                _warn_unread('%s, so the stores that rely on it were skipped'
+                             % _rel(state_path, workdir), ex)
+                bad_states.add(udd)
 
         def _udd(store):
             best = None
+            norm = store.replace('\\', '/')      # local_states is keyed the same way
             for udd in local_states:
-                if store.startswith(udd + '/') and (best is None or len(udd) > len(best)):
+                if norm.startswith(udd + '/') and (best is None or len(udd) > len(best)):
                     best = udd
             return best
 
         for store in sorted(logins) + sorted(cookies):
             udd = _udd(store)
             if udd is None:
+                print('warning: skipped %s: no readable Local State was found for it'
+                      % _rel(store, workdir), file=sys.stderr)
+                continue
+            if udd in bad_states:
                 continue
             is_login = store in logins
-            key, app_bound, records = _decrypt_chromium_profile(
-                local_states[udd], store if is_login else None,
-                None if is_login else store, pool)
+            try:
+                key, app_bound, records = _decrypt_chromium_profile(
+                    local_states[udd], store if is_login else None,
+                    None if is_login else store, pool)
+            except Exception as ex:  # pylint: disable=broad-exception-caught
+                _warn_unread(_rel(store, workdir), ex)
+                continue
             if records:
                 print('chromium %s:' % _rel(store, workdir))
                 _print_chromium(key, app_bound, records)
