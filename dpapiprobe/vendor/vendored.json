@@ -3,11 +3,11 @@
     {
       "path": "dpapiprobe/vendor/qnxprobe.py",
       "name": "qnxprobe",
-      "version": "1.85",
+      "version": "1.86",
       "upstream": "https://github.com/abrignoni/qnxprobe",
       "upstream_file": "qnxprobe.py",
-      "commit": "ce575c680b83975eadc944044c490d49fd43cf02",
-      "commit_date": "2026-11-22T15:31:11-05:00",
+      "commit": "e656e5918c5e97cd7abc0b0b09ca17ef34d534e6",
+      "commit_date": "2026-11-22T17:54:31-05:00",
       "licence": "MIT",
       "banner": true,
       "note": "Copied verbatim below its banner. Multi-filesystem image reader (NTFS, ext, F2FS, FAT, exFAT, QNX6, ...). Fix upstream and re-vendor; edits here are reverted by the next sync."
