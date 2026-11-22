@@ -1,4 +1,4 @@
-"""dpapiprobe: an offline Windows DPAPI decryption library (clean-room, MIT).
+"""dpapiprobe: an offline Windows DPAPI decryption library (MIT).
 
 Phase 1 (SYSTEM context, no credential gate): boot key, all LSA secrets, SYSTEM
 master keys, DPAPI blobs (with optional entropy), and the Credential Manager / Vault

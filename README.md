@@ -152,5 +152,5 @@ Windows master keys.
 
 ## Licence
 
-MIT. See [LICENSE](LICENSE). Written clean-room from the documented DPAPI structures and
+MIT. See [LICENSE](LICENSE). Written with Claude from the documented DPAPI structures and
 independent analysis.
