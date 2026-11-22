@@ -3,11 +3,11 @@
     {
       "path": "dpapiprobe/vendor/qnxprobe.py",
       "name": "qnxprobe",
-      "version": "1.76",
+      "version": "1.84",
       "upstream": "https://github.com/abrignoni/qnxprobe",
       "upstream_file": "qnxprobe.py",
-      "commit": "0ae8334ed22468a4fd46d5985987f4437badc676",
-      "commit_date": "2026-10-24T11:17:04-04:00",
+      "commit": "b7e72e2c73fbc75316b0b6de947c8c7562317f16",
+      "commit_date": "2026-11-22T13:04:44-05:00",
       "licence": "MIT",
       "banner": true,
       "note": "Copied verbatim below its banner. Multi-filesystem image reader (NTFS, ext, F2FS, FAT, exFAT, QNX6, ...). Fix upstream and re-vendor; edits here are reverted by the next sync."
@@ -15,11 +15,11 @@
     {
       "path": "dpapiprobe/vendor/ewfprobe.py",
       "name": "ewfprobe",
-      "version": "0.15.0",
+      "version": "0.17.1",
       "upstream": "https://github.com/abrignoni/ewfprobe",
       "upstream_file": "ewfprobe.py",
-      "commit": "4af1a54a223edbce12693b29fb3838b63a26b4f2",
-      "commit_date": "2026-10-23T11:44:00-04:00",
+      "commit": "7aaeb95f1f49c56a6365beb745e8ba43f687448b",
+      "commit_date": "2026-11-22T12:49:41-05:00",
       "licence": "MIT",
       "banner": true,
       "note": "Copied verbatim below its banner. EWF/E01 and AFF4/AD1 container reader, imported by qnxprobe. Fix upstream and re-vendor; edits here are reverted by the next sync."
