@@ -474,6 +474,29 @@ def test_a_suffixed_chromium_store_is_still_read():
     assert len(logins) == 2 and len(cookies) == 1
 
 
+def test_a_suffixed_local_state_is_used_when_the_plain_one_is_absent():
+    states, _logins, _cookies = cli._group_chromium(['/x/User Data/local state~name-2'])
+    assert list(states.values()) == ['/x/User Data/local state~name-2']
+
+
+def test_a_suffixed_vault_policy_is_used_when_the_plain_one_is_absent(tmp_path, monkeypatch):
+    (tmp_path / 'policy~name-2.vpol').write_bytes(b'policy')
+    seen = []
+
+    class Policy:
+        def __init__(self, raw):
+            seen.append(raw)
+
+        def decrypt_with_pool(self, _pool):
+            pass
+
+        def aes_key_candidates(self, _size):
+            return []
+    monkeypatch.setattr(cli, 'VaultPolicy', Policy)
+    cli._decrypt_vault_dir(str(tmp_path), None)
+    assert seen == [b'policy']
+
+
 def test_part_keys_do_not_confuse_a_delimiter_in_a_name():
     assert image._part_keys(['a\x01b', 'c']) != image._part_keys(['a', 'b', 'c'])
     assert image._part_keys(['a\\b', 'c'])[-1] != image._part_keys(['a', 'b', 'c'])[-1]

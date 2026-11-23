@@ -216,7 +216,8 @@ def _decrypt_vault_dir(vault_dir, pool):
     names = sorted(os.listdir(vault_dir)) if os.path.isdir(vault_dir) else []
     names = [name for name in names if os.path.isfile(os.path.join(vault_dir, name))]
     policy = ['Policy.vpol'] if 'Policy.vpol' in names else [
-        name for name in names if name.lower() == 'policy.vpol']
+        name for name in names if name.lower() == 'policy.vpol'] or [
+            name for name in names if _unsuffixed(name) == 'policy.vpol']
     if not policy:
         return []
     vpol_path = os.path.join(vault_dir, policy[0])
@@ -365,6 +366,12 @@ def _cookies_version(path):
         con.close()
 
 
+def _unsuffixed(name):
+    """A file name in lower case without the ~name-<n> that logical extraction adds when
+    two stored names differ only by case or Unicode form."""
+    return re.sub(r'~name-\d+(?=\.[^.]*$|$)', '', name.lower())
+
+
 def _parent(path):
     """The folder holding a path, as this OS reads it: a backslash is a separator only on
     Windows, and the folder has to exist when it is opened."""
@@ -407,18 +414,22 @@ def _group_vault(paths):
 
 def _group_chromium(paths):
     """(local_states {user data dir: Local State}, [login paths], [cookie paths])."""
-    local_states, logins, cookies = {}, [], []
+    local_states, logins, cookies, renamed_states = {}, [], [], {}
     for path in paths:
         base = os.path.basename(path).lower()
+        folder = os.path.normpath(os.path.dirname(path))
         if base == 'local state':
-            local_states[os.path.normpath(os.path.dirname(path))] = path
+            local_states[folder] = path
             continue
-        # a store that shared its name in another case or form was given a ~name-<n> suffix
-        store = re.sub(r'~name-\d+$', '', base)
-        if store in ('login data', 'login data for account'):
+        store = _unsuffixed(base)
+        if store == 'local state':
+            renamed_states.setdefault(folder, path)
+        elif store in ('login data', 'login data for account'):
             logins.append(path)
         elif store == 'cookies':
             cookies.append(path)
+    for folder, path in renamed_states.items():    # used only when the plain name is absent
+        local_states.setdefault(folder, path)
     return local_states, logins, cookies
 
 
