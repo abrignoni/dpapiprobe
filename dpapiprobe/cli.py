@@ -10,7 +10,6 @@ account's cleartext password or its SHA-1 hash, or the account's ARSO/TBAL secre
 the SAM NT hash alone cannot stand in for.
 """
 import argparse
-import glob
 import hashlib
 import json
 import os
@@ -213,7 +212,9 @@ _BAD_RECORD = (struct.error, ValueError, IndexError, KeyError, TypeError)
 
 def _decrypt_vault_dir(vault_dir, pool):
     """Recovered web credentials from one Vault directory as a list of dicts."""
-    vpol_path = os.path.join(vault_dir, 'Policy.vpol')
+    names = sorted(os.listdir(vault_dir)) if os.path.isdir(vault_dir) else []
+    policy = [name for name in names if name.lower() == 'policy.vpol']
+    vpol_path = os.path.join(vault_dir, policy[0]) if policy else ''
     if not os.path.isfile(vpol_path):
         return []
     vpol = VaultPolicy(_read(vpol_path))
@@ -222,7 +223,7 @@ def _decrypt_vault_dir(vault_dir, pool):
     if not aes_keys:
         return []
     out = []
-    for vcrd_path in sorted(glob.glob(os.path.join(glob.escape(vault_dir), '*.vcrd'))):
+    for vcrd_path in [os.path.join(vault_dir, n) for n in names if n.lower().endswith('.vcrd')]:
         try:
             record = VaultCredential(_read(vcrd_path))
             decrypted, _key = record.decrypt(aes_keys)
@@ -303,7 +304,8 @@ def _record(kind, ident, name, clear, scheme):
 
 def _readonly_uri(db_path):
     """A read-only SQLite URI for a path, which may hold #, ? or %."""
-    path = os.path.abspath(db_path)
+    # joined, not abspath: collapsing '..' before the OS resolves a symlink changes the file
+    path = os.path.join(os.getcwd(), db_path)
     if os.sep == '\\':                            # a backslash is a name character elsewhere
         path = path.replace('\\', '/')
     if not path.startswith('/'):

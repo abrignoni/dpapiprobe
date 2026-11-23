@@ -186,12 +186,6 @@ def test_logical_dl_child_does_not_displace_a_live_file(monkeypatch, tmp_path):
     assert _other_copies(tmp_path) == [b'old']
 
 
-def test_logical_dl_guard_sees_both_unicode_forms(monkeypatch, tmp_path):
-    entries = [_Entry(CREDS + '/Jos\u00e9', b'old', {'dl': 1}),
-               _Entry(CREDS + '/Jose\u0301', b'x' * 20)]
-    assert _extract(monkeypatch, tmp_path, entries, cap=10)[0][image.CREDENTIAL] == []
-
-
 def test_logical_empty_entry_is_not_inventoried(monkeypatch, tmp_path):
     assert _extract(monkeypatch, tmp_path, [_Entry(SYSTEM, b'')])[0][image.HIVE] == []
 
@@ -382,10 +376,10 @@ def test_logical_folders_that_clean_to_one_name_stay_apart(monkeypatch, tmp_path
     assert os.path.basename(clean) == 'a_b'
 
 
-def test_logical_folder_differing_by_case_stays_one_folder(monkeypatch, tmp_path):
-    entries = [_Entry(VAULT + '/a.vcrd', b'a'), _Entry(VAULT.upper() + '/b.vcrd', b'b')]
+def test_logical_folders_differing_by_case_stay_apart(monkeypatch, tmp_path):
+    entries = [_Entry(VAULT + '/a.vcrd', b'a'), _Entry(VAULT[:-1] + 'G/b.vcrd', b'b')]
     inventory, _ = _extract(monkeypatch, tmp_path, entries)
-    assert len({os.path.dirname(p).casefold() for p in inventory[image.VAULT]}) == 1
+    assert len({os.path.dirname(p) for p in inventory[image.VAULT]}) == 2
 
 
 @pytest.mark.parametrize('declared', [3, 8])
@@ -397,18 +391,17 @@ def test_logical_entry_of_another_length_than_declared_is_left_out(monkeypatch, 
     assert not [f for _d, _s, names in os.walk(tmp_path) for f in names]
 
 
-def test_logical_names_differing_by_case_take_one_place(monkeypatch, tmp_path):
+def test_logical_names_differing_by_case_stay_distinct(monkeypatch, tmp_path):
     entries = [_Entry(SYSTEM, b'first'), _Entry(SYSTEM[:-6] + 'system', b'second')]
     inventory, _ = _extract(monkeypatch, tmp_path, entries)
-    assert _bytes(inventory[image.HIVE]) == [b'first']
-    assert _other_copies(tmp_path) == [b'second']
+    named = {os.path.basename(p): open(p, 'rb').read() for p in inventory[image.HIVE]}
+    assert named == {'SYSTEM': b'first', 'system~name-2': b'second'}
 
 
-def test_logical_names_differing_by_normalization_take_one_place(monkeypatch, tmp_path):
+def test_logical_names_differing_by_normalization_stay_distinct(monkeypatch, tmp_path):
     entries = [_Entry(CREDS + '/Jos\u00e9', b'first'), _Entry(CREDS + '/Jose\u0301', b'second')]
     inventory, _ = _extract(monkeypatch, tmp_path, entries)
-    assert _bytes(inventory[image.CREDENTIAL]) == [b'first']
-    assert _other_copies(tmp_path) == [b'second']
+    assert _bytes(inventory[image.CREDENTIAL]) == [b'first', b'second']
 
 
 def test_logical_file_names_that_clean_to_one_name_stay_apart(monkeypatch, tmp_path):
@@ -461,6 +454,49 @@ def test_local_state_is_keyed_by_this_os_folder():
         pytest.skip('a backslash is a separator on Windows')
     local_states, _logins, _cookies = cli._group_chromium(['/x/a\\b/User Data/Local State'])
     assert list(local_states) == ['/x/a\\b/User Data']
+
+
+def test_vault_finds_names_in_any_case(tmp_path, monkeypatch):
+    (tmp_path / 'POLICY.VPOL').write_bytes(b'x')
+    (tmp_path / 'R.VCRD').write_bytes(b'record')
+    seen = []
+
+    class Policy:
+        def __init__(self, _raw):
+            pass
+
+        def decrypt_with_pool(self, _pool):
+            pass
+
+        def aes_key_candidates(self, _size):
+            return [b'k']
+
+    class Record:
+        friendly_name = 'x'
+
+        def __init__(self, raw):
+            seen.append(raw)
+
+        def decrypt(self, _keys):
+            return {}, None
+    monkeypatch.setattr(cli, 'VaultPolicy', Policy)
+    monkeypatch.setattr(cli, 'VaultCredential', Record)
+    cli._decrypt_vault_dir(str(tmp_path), None)
+    assert seen == [b'record']
+
+
+def test_readonly_uri_keeps_parent_parts_for_the_os_to_resolve(tmp_path):
+    if os.sep == '\\':
+        pytest.skip('POSIX symlink behavior')
+    (tmp_path / 'real' / 'sub').mkdir(parents=True)
+    (tmp_path / 'link').symlink_to(tmp_path / 'real' / 'sub')
+    db = tmp_path / 'real' / 'x.db'
+    con = sqlite3.connect(db)
+    con.execute('CREATE TABLE logins (a)')
+    con.execute('INSERT INTO logins VALUES (1)')
+    con.commit()
+    con.close()
+    assert cli._chromium_rows(str(tmp_path / 'link' / '..' / 'x.db'), 'logins', ['a']) == [(1,)]
 
 
 def test_lost_entries_reach_the_warning_channel(monkeypatch, tmp_path):

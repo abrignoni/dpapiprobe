@@ -136,9 +136,10 @@ def _safe_parts(names):
 def _assign_folders(paths):
     """The safe parts of each ``(raw parts, safe parts)``, one place per source name.
 
-    Cleaning a name can make two source names read alike (``a:b`` and ``a_b``). The CLI pairs
-    files by folder and finds them by name, so they must not share a place. A name that
-    needed no cleaning keeps it. The other gets a ``~name-<n>`` suffix, before a file's
+    Cleaning a name, or a volume that folds case or Unicode form, can make two source names
+    read alike (``a:b`` and ``a_b``, ``Key`` and ``key``). The CLI pairs files by folder and
+    finds them by name, so they must not share a place. A name that needed no cleaning
+    keeps it, the first stored if several did. The other gets a ``~name-<n>`` suffix, before a file's
     extension. Entries stored under one name still share it, and the caller chooses
     among them.
     """
@@ -147,7 +148,7 @@ def _assign_folders(paths):
     def place(raw, safe):
         out = []
         for depth, cleaned in enumerate(safe):
-            key = _same_path_key('/'.join(raw[:depth + 1]))
+            key = '/'.join(raw[:depth + 1])        # the stored names are the identity
             if key not in assigned:
                 is_file = depth == len(safe) - 1
                 base, ext = os.path.splitext(cleaned) if is_file else (cleaned, '')
