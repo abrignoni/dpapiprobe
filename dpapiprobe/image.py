@@ -192,6 +192,14 @@ def _source_key(names):
             tuple(_same_path_key(part) for part in inner))
 
 
+def _discard(path):
+    """Remove a file this run made. Failing to must not stop the other entries."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 def _copy_entry(img, entry, dest, run):
     """Copy an entry to a path nothing holds yet. Returns 'ok', 'taken' when something holds
     the path, 'unreadable' when the entry cannot be read in full at its declared size, 'damaged' when its bytes do not
@@ -221,24 +229,23 @@ def _copy_entry(img, entry, dest, run):
                     for digest, _stored in digests:
                         digest.update(chunk)
     except Exception:  # pylint: disable=broad-exception-caught
-        if os.path.exists(scratch):
-            os.remove(scratch)
+        _discard(scratch)
         return 'unreadable' if reading else 'unwritable'
     if got != entry.size:
-        os.remove(scratch)
+        _discard(scratch)
         return 'unreadable'
     if any(digest.hexdigest() != stored.lower() for digest, stored in digests):
-        os.remove(scratch)
+        _discard(scratch)
         return 'damaged'
     if not digests and _reader_saw_damage(img, entry):
-        os.remove(scratch)
+        _discard(scratch)
         return 'bad-chunk'
     try:
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         with open(dest, 'xb'):                     # claims the name; never overwrites
             pass
     except Exception:  # pylint: disable=broad-exception-caught
-        os.remove(scratch)
+        _discard(scratch)
         # a parent that is a file, or on Windows a folder at this name, raises its own error
         taken = os.path.lexists(dest) or any(
             os.path.isfile(parent) for parent in _parents(dest, run))
@@ -247,9 +254,8 @@ def _copy_entry(img, entry, dest, run):
     try:
         os.replace(scratch, dest)
     except OSError:
-        for leftover in (scratch, dest):
-            if os.path.exists(leftover):
-                os.remove(leftover)
+        _discard(scratch)
+        _discard(dest)
         _remove_empty_parents(dest, run)
         return 'unwritable'
     return 'ok'

@@ -506,6 +506,21 @@ def test_logical_dl_entry_with_a_joined_name_is_not_a_twin_of_a_nested_path(monk
     assert _bytes(inventory[image.VAULT]) == [b'live', b'old']
 
 
+def test_group_protect_keeps_the_stored_sid():
+    protect = cli._group_protect(['/x/Microsoft/Protect/s-1-5-21-1-2-3-1001~name-2/key'])
+    assert list(protect) == ['s-1-5-21-1-2-3-1001']
+
+
+def test_logical_failed_cleanup_does_not_stop_the_rest(monkeypatch, tmp_path):
+    def refuse(_path):
+        raise OSError('busy')
+    monkeypatch.setattr(image.os, 'remove', refuse)
+    entries = [_Entry(CREDS + '/bad', b'x', size=9), _Entry(CREDS + '/good', b'two')]
+    inventory, logs = _extract(monkeypatch, tmp_path, entries)
+    assert _bytes(inventory[image.CREDENTIAL]) == [b'two']
+    assert any('could not read' in line for line in logs)
+
+
 def test_part_keys_do_not_confuse_a_delimiter_in_a_name():
     assert image._part_keys(['a\x01b', 'c']) != image._part_keys(['a', 'b', 'c'])
     assert image._part_keys(['a\\b', 'c'])[-1] != image._part_keys(['a', 'b', 'c'])[-1]

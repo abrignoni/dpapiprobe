@@ -401,7 +401,7 @@ def _group_protect(paths):
     dirs = {}
     for path in paths:
         parent = _parent(path)
-        sid = os.path.basename(parent)
+        sid = re.sub(r'~name-\d+$', '', os.path.basename(parent))  # the SID as stored
         if sid.upper().startswith('S-1-'):
             dirs.setdefault(sid, set()).add(parent)
     return dirs
