@@ -411,6 +411,27 @@ def test_logical_names_differing_by_normalization_take_one_place(monkeypatch, tm
     assert _other_copies(tmp_path) == [b'second']
 
 
+def test_logical_file_names_that_clean_to_one_name_stay_apart(monkeypatch, tmp_path):
+    entries = [_Entry(VAULT + '/a:b.vcrd', b'one'), _Entry(VAULT + '/a_b.vcrd', b'two')]
+    inventory, _ = _extract(monkeypatch, tmp_path, entries)
+    assert _bytes(inventory[image.VAULT]) == [b'one', b'two']
+    assert all(path.endswith('.vcrd') for path in inventory[image.VAULT])
+    named = {open(p, 'rb').read(): os.path.basename(p) for p in inventory[image.VAULT]}
+    assert named[b'two'] == 'a_b.vcrd'
+
+
+def test_evidence_hash_asks_for_a_non_security_use(monkeypatch):
+    seen = []
+    real = hashlib.new
+
+    def spy(name, *args, **kwargs):
+        seen.append(kwargs.get('usedforsecurity'))
+        return real(name, *args, **kwargs)
+    monkeypatch.setattr(image.hashlib, 'new', spy)
+    image._evidence_hash('md5')
+    assert seen == [False]
+
+
 def test_logical_failed_publish_leaves_nothing_and_carries_on(monkeypatch, tmp_path):
     real = os.replace
 
@@ -471,6 +492,40 @@ def test_one_bad_vault_record_keeps_the_others(tmp_path, monkeypatch, capsys):
                         lambda _c: {'resource': 'r', 'user': 'u', 'password': 'p'})
     assert [c['source'] for c in cli._decrypt_vault_dir(str(tmp_path), None)] == ['a.vcrd']
     assert 'z.vcrd' in capsys.readouterr().err
+
+
+def test_one_bad_vault_attribute_keeps_the_others(tmp_path, monkeypatch, capsys):
+    (tmp_path / 'Policy.vpol').write_bytes(b'x')
+    (tmp_path / 'a.vcrd').write_bytes(b'x')
+
+    class Policy:
+        def __init__(self, _raw):
+            pass
+
+        def decrypt_with_pool(self, _pool):
+            pass
+
+        def aes_key_candidates(self, _size):
+            return [b'k']
+
+    class Record:
+        friendly_name = 'x'
+
+        def __init__(self, _raw):
+            pass
+
+        def decrypt(self, _keys):
+            return {'bad': b'bad', 'good': b'good'}, None
+
+    def parse(clear):
+        if clear == b'bad':
+            raise struct.error('short')
+        return {'resource': 'r', 'user': 'u', 'password': 'p'}
+    monkeypatch.setattr(cli, 'VaultPolicy', Policy)
+    monkeypatch.setattr(cli, 'VaultCredential', Record)
+    monkeypatch.setattr(cli, 'parse_web_credential', parse)
+    assert len(cli._decrypt_vault_dir(str(tmp_path), None)) == 1
+    assert 'an attribute of a.vcrd' in capsys.readouterr().err
 
 
 def test_one_bad_login_row_keeps_the_others(tmp_path, monkeypatch, capsys):

@@ -226,14 +226,19 @@ def _decrypt_vault_dir(vault_dir, pool):
         try:
             record = VaultCredential(_read(vcrd_path))
             decrypted, _key = record.decrypt(aes_keys)
-            for clear in (decrypted or {}).values():
-                cred = parse_web_credential(clear)
-                if cred:
-                    out.append({'schema': record.friendly_name, 'resource': cred['resource'],
-                                'user': cred['user'], 'password': cred['password'],
-                                'source': os.path.basename(vcrd_path), 'vault': vault_dir})
         except _BAD_RECORD as ex:
             _warn_unread(os.path.basename(vcrd_path), ex)
+            continue
+        for clear in (decrypted or {}).values():
+            try:
+                cred = parse_web_credential(clear)
+            except _BAD_RECORD as ex:
+                _warn_unread('an attribute of %s' % os.path.basename(vcrd_path), ex)
+                continue
+            if cred:
+                out.append({'schema': record.friendly_name, 'resource': cred['resource'],
+                            'user': cred['user'], 'password': cred['password'],
+                            'source': os.path.basename(vcrd_path), 'vault': vault_dir})
     return out
 
 

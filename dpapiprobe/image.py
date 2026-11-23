@@ -134,31 +134,35 @@ def _safe_parts(names):
 
 
 def _assign_folders(paths):
-    """The safe parts of each ``(raw parts, safe parts)``, with one folder per source folder.
+    """The safe parts of each ``(raw parts, safe parts)``, one place per source name.
 
-    Cleaning a name can make two source folders read alike (``a:b`` and ``a_b``). The CLI
-    pairs files by folder, so they must not share one. A folder whose name needed no
-    cleaning keeps it; the other gets a ``~folder-<n>`` suffix.
+    Cleaning a name can make two source names read alike (``a:b`` and ``a_b``). The CLI pairs
+    files by folder and finds them by name, so they must not share a place. A name that
+    needed no cleaning keeps it. The other gets a ``~name-<n>`` suffix, before a file's
+    extension. Entries stored under one name still share it, and the caller chooses
+    among them.
     """
     assigned, owners = {}, {}
 
     def place(raw, safe):
         out = []
-        for depth in range(len(raw) - 1):
+        for depth, cleaned in enumerate(safe):
             key = _same_path_key('/'.join(raw[:depth + 1]))
             if key not in assigned:
-                name, number = safe[depth], 1
+                is_file = depth == len(safe) - 1
+                base, ext = os.path.splitext(cleaned) if is_file else (cleaned, '')
+                name, number = cleaned, 1
                 slot = _same_path_key('/'.join(out + [name]))
                 while owners.setdefault(slot, key) != key:
                     number += 1
-                    name = '%s~folder-%d' % (safe[depth], number)
+                    name = '%s~name-%d%s' % (base, number, ext)
                     slot = _same_path_key('/'.join(out + [name]))
                 assigned[key] = name
             out.append(assigned[key])
-        return out + [safe[-1]]
+        return out
 
     for raw, safe in paths:                        # names that needed no cleaning go first
-        if raw[:-1] == safe[:-1]:
+        if raw == safe:
             place(raw, safe)
     return [place(raw, safe) for raw, safe in paths]
 
@@ -172,7 +176,7 @@ def _copy_entry(img, entry, dest, run):
     scratch = os.path.join(run, '.copying')
     kind, stored = (('md5', entry.md5) if getattr(entry, 'md5', None)
                     else ('sha1', getattr(entry, 'sha1', None)))
-    digest = hashlib.new(kind) if stored else None
+    digest = _evidence_hash(kind) if stored else None
     reading = True
     got = 0
     try:
@@ -224,6 +228,14 @@ def _copy_entry(img, entry, dest, run):
         _remove_empty_parents(dest, run)
         return 'unwritable'
     return 'ok'
+
+
+def _evidence_hash(kind):
+    """A hash for an integrity check, which a build that blocks MD5 for security allows."""
+    try:
+        return hashlib.new(kind, usedforsecurity=False)
+    except TypeError:                              # Python 3.8 has no such argument
+        return hashlib.new(kind)
 
 
 def _reader_saw_damage(img, entry):
