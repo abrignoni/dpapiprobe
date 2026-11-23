@@ -109,12 +109,22 @@ class MasterKeyPool:
     def guids(self):
         return list(self._files)
 
-    def decrypt_all(self, candidates):
-        """Decrypt every loaded master key with ``candidates``; return count decrypted."""
+    def decrypt_all(self, candidates, on_error=None):
+        """Decrypt every loaded master key with ``candidates``; return count decrypted.
+
+        A file that cannot be parsed raises, unless ``on_error(guid, exception)`` is given
+        to report it and carry on with the others.
+        """
         for guid, raw in self._files.items():
             if guid in self._keys:
                 continue
-            key = decrypt_master_key(raw, candidates)
+            try:
+                key = decrypt_master_key(raw, candidates)
+            except (struct.error, ValueError, IndexError, KeyError) as ex:
+                if on_error is None:
+                    raise
+                on_error(guid, ex)
+                continue
             if key is not None:
                 self._keys[guid] = key
         return len(self._keys)

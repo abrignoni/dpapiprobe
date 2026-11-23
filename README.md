@@ -90,7 +90,8 @@ file you name.
 
 Instead of files already pulled from an image, point it at the image and it finds them
 itself, through the vendored `ewfprobe` and `qnxprobe` readers (E01, raw, AFF4, AD-encrypted
-and split images; the NTFS volume and the other filesystems qnxprobe walks). No extra
+and split images; the NTFS volume and the other filesystems qnxprobe walks; and the logical
+evidence formats L01, Lx01 and AD1, whose entries are searched for the same files). No extra
 dependency: both readers are pure Python and ship in the package. `triage` opens the image
 read only, locates the hives, master keys, Vault and Chromium stores across every volume,
 and decrypts what the account's password or its ARSO/TBAL secret opens:
