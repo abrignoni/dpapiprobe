@@ -185,6 +185,13 @@ def _part_keys(names):
     return keys
 
 
+def _source_key(names):
+    """An entry's full stored path, keeping its name boundaries, folded for case and form."""
+    done, inner = _part_keys(names)[-1]
+    return (tuple(tuple(_same_path_key(part) for part in name) for name in done),
+            tuple(_same_path_key(part) for part in inner))
+
+
 def _copy_entry(img, entry, dest, run):
     """Copy an entry to a path nothing holds yet. Returns 'ok', 'taken' when something holds
     the path, 'unreadable' when the entry cannot be read in full at its declared size, 'damaged' when its bytes do not
@@ -333,7 +340,7 @@ def _extract_logical(image_path, dest_dir, password, private_key, inventory, log
             rel = '/'.join(parts)
             has_dl = bool((entry.times or {}).get('dl'))
             if not has_dl:                             # by source path, before any suffix
-                live.add(_same_path_key('/'.join(_raw_parts(entry.names))))
+                live.add(_source_key(entry.names))
             if entry.size > max_file_bytes:
                 warn('skip oversized %s (%s bytes)' % (rel, entry.size))
             elif not entry.size:
@@ -352,7 +359,7 @@ def _extract_logical(image_path, dest_dir, password, private_key, inventory, log
             state = 'taken'
             key = _same_path_key(rel)
             # published is kept here so the choice is the same on any extraction volume
-            source = _same_path_key('/'.join(_raw_parts(entry.names)))
+            source = _source_key(entry.names)
             if key not in published and not (has_dl and source in live):
                 dest = os.path.join(root, *parts)
                 state = _copy_entry(img, entry, dest, run)

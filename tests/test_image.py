@@ -497,6 +497,15 @@ def test_a_suffixed_vault_policy_is_used_when_the_plain_one_is_absent(tmp_path, 
     assert seen == [b'policy']
 
 
+def test_logical_dl_entry_with_a_joined_name_is_not_a_twin_of_a_nested_path(monkeypatch,
+                                                                             tmp_path):
+    joined = _Entry(VAULT + '/x', b'old', {'dl': 1})
+    joined.names = tuple(VAULT.split('/')) + ('sub\\r.vcrd',)
+    entries = [joined, _Entry(VAULT + '/sub/r.vcrd', b'live')]
+    inventory, _ = _extract(monkeypatch, tmp_path, entries)
+    assert _bytes(inventory[image.VAULT]) == [b'live', b'old']
+
+
 def test_part_keys_do_not_confuse_a_delimiter_in_a_name():
     assert image._part_keys(['a\x01b', 'c']) != image._part_keys(['a', 'b', 'c'])
     assert image._part_keys(['a\\b', 'c'])[-1] != image._part_keys(['a', 'b', 'c'])[-1]
