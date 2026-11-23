@@ -457,6 +457,25 @@ def test_local_state_is_keyed_by_this_os_folder():
     assert list(local_states) == ['/x/a\\b/User Data']
 
 
+def test_logical_live_entry_keeps_the_name_over_a_dl_entry_in_another_case(monkeypatch,
+                                                                            tmp_path):
+    entries = [_Entry(SYSTEM[:-6] + 'system', b'old', {'dl': 1}), _Entry(SYSTEM, b'live')]
+    inventory, _ = _extract(monkeypatch, tmp_path, entries)
+    named = {os.path.basename(p): open(p, 'rb').read() for p in inventory[image.HIVE]}
+    assert named['SYSTEM'] == b'live'
+    entries = [_Entry(SYSTEM[:-6] + 'SYSTEM', b'old', {'dl': 1}),
+               _Entry(SYSTEM[:-6] + 'system', b'live')]
+    inventory, _ = _extract(monkeypatch, tmp_path, entries)
+    named = {os.path.basename(p): open(p, 'rb').read() for p in inventory[image.HIVE]}
+    assert named['system'] == b'live'
+
+
+def test_part_keys_do_not_confuse_a_delimiter_in_a_name():
+    assert image._part_keys(['a\x01b', 'c']) != image._part_keys(['a', 'b', 'c'])
+    assert image._part_keys(['a\\b', 'c'])[-1] != image._part_keys(['a', 'b', 'c'])[-1]
+    assert image._part_keys(['a\x00b'])[-1] != image._part_keys(['a', 'b'])[-1]
+
+
 def test_vault_prefers_the_exact_policy_and_skips_folders(tmp_path, monkeypatch):
     if _folds_case(tmp_path):
         pytest.skip('needs a case-sensitive volume')

@@ -134,15 +134,15 @@ def _safe_parts(names):
 
 
 def _assign_folders(paths):
-    """The safe parts of each ``(identity, safe parts, clean)``, one place per source name.
+    """The safe parts of each ``(identity, safe parts, rank)``, one place per source name.
 
     ``identity`` holds one key per part (``_part_keys``), so a stored name holding a
     separator is not the same source as a real nested path.
 
     Cleaning a name, or a volume that folds case or Unicode form, can make two source names
     read alike (``a:b`` and ``a_b``, ``Key`` and ``key``). The CLI pairs files by folder and
-    finds them by name, so they must not share a place. A name that needed no cleaning
-    keeps it, the first stored if several did. The other gets a ``~name-<n>`` suffix, before a file's
+    finds them by name, so they must not share a place. The lowest rank keeps the
+    name, the first stored if several tie. The other gets a ``~name-<n>`` suffix, before a file's
     extension. Entries stored under one name still share it, and the caller chooses
     among them.
     """
@@ -165,24 +165,23 @@ def _assign_folders(paths):
             out.append(assigned[key])
         return out
 
-    for identity, safe, clean in paths:            # names that needed no cleaning go first
-        if clean:
-            place(identity, safe)
-    return [place(identity, safe) for identity, safe, _clean in paths]
+    # the real names go to live entries first, then to names that needed no cleaning
+    for identity, safe, _rank in sorted(paths, key=lambda path: path[2]):
+        place(identity, safe)
+    return [place(identity, safe) for identity, safe, _rank in paths]
 
 
 def _part_keys(names):
     """One key per path part, keeping where each stored name began and ended."""
-    keys, so_far = [], ''
+    keys, done = [], ()
     for name in names:
-        inner = ''
+        inner = ()
         for part in re.split(r'[\\/]', name):
-            if part in ('', '.'):
-                continue
-            inner = inner + '\x01' + part if inner else part
-            keys.append(so_far + '\x00' + inner)
+            if part not in ('', '.'):
+                inner += (part,)
+                keys.append((done, inner))
         if inner:
-            so_far += '\x00' + inner
+            done += (inner,)
     return keys
 
 
@@ -326,7 +325,8 @@ def _extract_logical(image_path, dest_dir, password, private_key, inventory, log
                 warn('left out %s: FTK Imager lists it as deleted' % rel)
                 continue
             clean = raw == safe and not any(re.search(r'[\\/]', name) for name in entry.names)
-            found.append((position, entry, (_part_keys(entry.names), safe, clean), category))
+            rank = (bool((entry.times or {}).get('dl')), not clean)
+            found.append((position, entry, (_part_keys(entry.names), safe, rank), category))
         wanted, live = [], set()
         placed = _assign_folders([item[2] for item in found])
         for (position, entry, _path, category), parts in zip(found, placed):
