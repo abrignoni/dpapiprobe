@@ -404,10 +404,9 @@ def _group_chromium(paths):
     """(local_states {user data dir: Local State}, [login paths], [cookie paths])."""
     local_states, logins, cookies = {}, [], []
     for path in paths:
-        norm = path.replace('\\', '/')
-        base = norm.rsplit('/', 1)[-1].lower()
+        base = os.path.basename(path).lower()
         if base == 'local state':
-            local_states[norm.rsplit('/', 1)[0]] = path
+            local_states[os.path.normpath(os.path.dirname(path))] = path
         elif base in ('login data', 'login data for account'):
             logins.append(path)
         elif base == 'cookies':
@@ -481,9 +480,9 @@ def cmd_triage(args):
 
         def _udd(store):
             best = None
-            norm = store.replace('\\', '/')      # local_states is keyed the same way
+            norm = os.path.normpath(store)         # local_states is keyed the same way
             for udd in local_states:
-                if norm.startswith(udd + '/') and (best is None or len(udd) > len(best)):
+                if norm.startswith(udd + os.sep) and (best is None or len(udd) > len(best)):
                     best = udd
             return best
 

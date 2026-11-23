@@ -174,9 +174,9 @@ def _copy_entry(img, entry, dest, run):
     it failed its checksum, or 'unwritable' when the copy cannot be made. The bytes are read in full first, so an unreadable entry leaves no
     folder behind that would stand in another entry's way."""
     scratch = os.path.join(run, '.copying')
-    kind, stored = (('md5', entry.md5) if getattr(entry, 'md5', None)
-                    else ('sha1', getattr(entry, 'sha1', None)))
-    digest = _evidence_hash(kind) if stored else None
+    digests = [(_evidence_hash(kind), stored) for kind, stored in
+               (('md5', getattr(entry, 'md5', None)), ('sha1', getattr(entry, 'sha1', None)))
+               if stored]
     reading = True
     got = 0
     try:
@@ -193,7 +193,7 @@ def _copy_entry(img, entry, dest, run):
                     if got > entry.size:           # more than the entry declares
                         break
                     handle.write(chunk)
-                    if digest:
+                    for digest, _stored in digests:
                         digest.update(chunk)
     except Exception:  # pylint: disable=broad-exception-caught
         if os.path.exists(scratch):
@@ -202,10 +202,10 @@ def _copy_entry(img, entry, dest, run):
     if got != entry.size:
         os.remove(scratch)
         return 'unreadable'
-    if digest and digest.hexdigest() != stored.lower():
+    if any(digest.hexdigest() != stored.lower() for digest, stored in digests):
         os.remove(scratch)
         return 'damaged'
-    if not digest and _reader_saw_damage(img, entry):
+    if not digests and _reader_saw_damage(img, entry):
         os.remove(scratch)
         return 'bad-chunk'
     try:

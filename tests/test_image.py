@@ -448,6 +448,21 @@ def test_logical_failed_publish_leaves_nothing_and_carries_on(monkeypatch, tmp_p
     assert names == ['good']
 
 
+def test_logical_entry_must_match_every_stored_hash(monkeypatch, tmp_path):
+    entry = _Entry(SYSTEM, b'bytes')
+    entry.md5 = hashlib.md5(b'bytes').hexdigest()
+    entry.sha1 = hashlib.sha1(b'other').hexdigest()
+    inventory, logs = _extract(monkeypatch, tmp_path, [entry])
+    assert inventory[image.HIVE] == [] and any('does not match' in line for line in logs)
+
+
+def test_local_state_is_keyed_by_this_os_folder():
+    if os.sep == '\\':
+        pytest.skip('a backslash is a separator on Windows')
+    local_states, _logins, _cookies = cli._group_chromium(['/x/a\\b/User Data/Local State'])
+    assert list(local_states) == ['/x/a\\b/User Data']
+
+
 def test_lost_entries_reach_the_warning_channel(monkeypatch, tmp_path):
     from dpapiprobe.vendor import ewfprobe, qnxprobe
 
