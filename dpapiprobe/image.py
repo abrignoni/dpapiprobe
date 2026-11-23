@@ -332,8 +332,8 @@ def _extract_logical(image_path, dest_dir, password, private_key, inventory, log
         for (position, entry, _path, category), parts in zip(found, placed):
             rel = '/'.join(parts)
             has_dl = bool((entry.times or {}).get('dl'))
-            if not has_dl:
-                live.add(_same_path_key(rel))
+            if not has_dl:                             # by source path, before any suffix
+                live.add(_same_path_key('/'.join(_raw_parts(entry.names))))
             if entry.size > max_file_bytes:
                 warn('skip oversized %s (%s bytes)' % (rel, entry.size))
             elif not entry.size:
@@ -352,7 +352,8 @@ def _extract_logical(image_path, dest_dir, password, private_key, inventory, log
             state = 'taken'
             key = _same_path_key(rel)
             # published is kept here so the choice is the same on any extraction volume
-            if key not in published and not (has_dl and key in live):
+            source = _same_path_key('/'.join(_raw_parts(entry.names)))
+            if key not in published and not (has_dl and source in live):
                 dest = os.path.join(root, *parts)
                 state = _copy_entry(img, entry, dest, run)
                 if state == 'ok':

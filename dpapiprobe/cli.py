@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import struct
 import sys
@@ -411,9 +412,12 @@ def _group_chromium(paths):
         base = os.path.basename(path).lower()
         if base == 'local state':
             local_states[os.path.normpath(os.path.dirname(path))] = path
-        elif base in ('login data', 'login data for account'):
+            continue
+        # a store that shared its name in another case or form was given a ~name-<n> suffix
+        store = re.sub(r'~name-\d+$', '', base)
+        if store in ('login data', 'login data for account'):
             logins.append(path)
-        elif base == 'cookies':
+        elif store == 'cookies':
             cookies.append(path)
     return local_states, logins, cookies
 

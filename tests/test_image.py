@@ -457,17 +457,21 @@ def test_local_state_is_keyed_by_this_os_folder():
     assert list(local_states) == ['/x/a\\b/User Data']
 
 
-def test_logical_live_entry_keeps_the_name_over_a_dl_entry_in_another_case(monkeypatch,
-                                                                            tmp_path):
-    entries = [_Entry(SYSTEM[:-6] + 'system', b'old', {'dl': 1}), _Entry(SYSTEM, b'live')]
+def test_logical_dl_entry_in_another_case_stays_out_of_the_inventory(monkeypatch, tmp_path):
+    entries = [_Entry(VAULT + '/R.vcrd', b'old', {'dl': 1}), _Entry(VAULT + '/r.vcrd', b'live')]
     inventory, _ = _extract(monkeypatch, tmp_path, entries)
-    named = {os.path.basename(p): open(p, 'rb').read() for p in inventory[image.HIVE]}
-    assert named['SYSTEM'] == b'live'
-    entries = [_Entry(SYSTEM[:-6] + 'SYSTEM', b'old', {'dl': 1}),
-               _Entry(SYSTEM[:-6] + 'system', b'live')]
-    inventory, _ = _extract(monkeypatch, tmp_path, entries)
-    named = {os.path.basename(p): open(p, 'rb').read() for p in inventory[image.HIVE]}
-    assert named['system'] == b'live'
+    assert _bytes(inventory[image.VAULT]) == [b'live']
+    assert os.path.basename(inventory[image.VAULT][0]) == 'r.vcrd'
+    assert b'old' in _other_copies(tmp_path)
+
+
+def test_a_suffixed_chromium_store_is_still_read():
+    states, logins, cookies = cli._group_chromium([
+        '/x/User Data/Local State', '/x/User Data/Default/Login Data',
+        '/x/User Data/Default/login data~name-2', '/x/User Data/Default/cookies~name-2',
+        '/x/User Data/local state~name-2'])
+    assert list(states.values()) == ['/x/User Data/Local State']
+    assert len(logins) == 2 and len(cookies) == 1
 
 
 def test_part_keys_do_not_confuse_a_delimiter_in_a_name():
