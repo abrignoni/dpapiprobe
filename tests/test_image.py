@@ -397,11 +397,25 @@ def test_logical_entry_of_another_length_than_declared_is_left_out(monkeypatch, 
     assert not [f for _d, _s, names in os.walk(tmp_path) for f in names]
 
 
+def test_logical_names_differing_by_case_take_one_place(monkeypatch, tmp_path):
+    entries = [_Entry(SYSTEM, b'first'), _Entry(SYSTEM[:-6] + 'system', b'second')]
+    inventory, _ = _extract(monkeypatch, tmp_path, entries)
+    assert _bytes(inventory[image.HIVE]) == [b'first']
+    assert _other_copies(tmp_path) == [b'second']
+
+
+def test_logical_names_differing_by_normalization_take_one_place(monkeypatch, tmp_path):
+    entries = [_Entry(CREDS + '/Jos\u00e9', b'first'), _Entry(CREDS + '/Jose\u0301', b'second')]
+    inventory, _ = _extract(monkeypatch, tmp_path, entries)
+    assert _bytes(inventory[image.CREDENTIAL]) == [b'first']
+    assert _other_copies(tmp_path) == [b'second']
+
+
 def test_logical_failed_publish_leaves_nothing_and_carries_on(monkeypatch, tmp_path):
     real = os.replace
 
     def refuse_first(src, dst):
-        if dst.endswith('Credentials/bad'):
+        if os.path.basename(dst) == 'bad':
             raise OSError('refused')
         real(src, dst)
     monkeypatch.setattr(image.os, 'replace', refuse_first)

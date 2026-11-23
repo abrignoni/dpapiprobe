@@ -314,14 +314,18 @@ def _extract_logical(image_path, dest_dir, password, private_key, inventory, log
                 wanted.append((has_dl, joined, -len(parts), position, entry, parts,
                                category))
         wanted.sort(key=lambda item: item[:4])
+        published = set()
         for has_dl, _joined, _depth, position, entry, parts, category in wanted:
             rel = '/'.join(parts)
             state = 'taken'
-            if not (has_dl and _same_path_key(rel) in live):
+            key = _same_path_key(rel)
+            # published is kept here so the choice is the same on any extraction volume
+            if key not in published and not (has_dl and key in live):
                 dest = os.path.join(root, *parts)
                 state = _copy_entry(img, entry, dest, run)
                 if state == 'ok':
                     inventory[category].append(dest)
+                    published.add(key)
             if state == 'taken':
                 other = os.path.join(run, 'other-copies', str(position), parts[-1])
                 state = _copy_entry(img, entry, other, run)
