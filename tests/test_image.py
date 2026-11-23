@@ -238,6 +238,8 @@ def test_logical_skips_what_holds_no_file(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize('folder', ['Case #7', 'a?b', 'a%41'])
 def test_cookie_version_reads_a_path_holding_uri_characters(tmp_path, folder):
+    if os.name == 'nt' and '?' in folder:
+        pytest.skip('Windows cannot create a folder with a question mark')
     where = tmp_path / folder
     where.mkdir()
     db = where / 'Cookies'
@@ -368,6 +370,47 @@ def test_logical_data_with_no_size_and_deleted_ad1_are_reported(monkeypatch, tmp
     assert _extract(monkeypatch, tmp_path, [placeholder])[1] == []
     logs = _extract(monkeypatch, tmp_path, [_ad1_entry(deleted=True)], fmt=ewfprobe.FORMAT_AD1)[1]
     assert any('as deleted' in line for line in logs)
+
+
+def test_logical_folders_that_clean_to_one_name_stay_apart(monkeypatch, tmp_path):
+    base = 'Users/u/AppData/Local/Microsoft/Vault/'
+    entries = [_Entry(base + 'a:b/Policy.vpol', b'one'), _Entry(base + 'a_b/x.vcrd', b'two')]
+    inventory, _ = _extract(monkeypatch, tmp_path, entries)
+    folders = {os.path.dirname(p): open(p, 'rb').read() for p in inventory[image.VAULT]}
+    assert len(folders) == 2
+    clean = [f for f, data in folders.items() if data == b'two'][0]
+    assert os.path.basename(clean) == 'a_b'
+
+
+def test_logical_folder_differing_by_case_stays_one_folder(monkeypatch, tmp_path):
+    entries = [_Entry(VAULT + '/a.vcrd', b'a'), _Entry(VAULT.upper() + '/b.vcrd', b'b')]
+    inventory, _ = _extract(monkeypatch, tmp_path, entries)
+    assert len({os.path.dirname(p).casefold() for p in inventory[image.VAULT]}) == 1
+
+
+@pytest.mark.parametrize('declared', [3, 8])
+def test_logical_entry_of_another_length_than_declared_is_left_out(monkeypatch, tmp_path,
+                                                                   declared):
+    entry = _Entry(SYSTEM, b'hello', size=declared)
+    inventory, logs = _extract(monkeypatch, tmp_path, [entry])
+    assert inventory[image.HIVE] == [] and any('could not read' in line for line in logs)
+    assert not [f for _d, _s, names in os.walk(tmp_path) for f in names]
+
+
+def test_logical_failed_publish_leaves_nothing_and_carries_on(monkeypatch, tmp_path):
+    real = os.replace
+
+    def refuse_first(src, dst):
+        if dst.endswith('Credentials/bad'):
+            raise OSError('refused')
+        real(src, dst)
+    monkeypatch.setattr(image.os, 'replace', refuse_first)
+    entries = [_Entry(CREDS + '/bad', b'one'), _Entry(CREDS + '/good', b'two')]
+    inventory, logs = _extract(monkeypatch, tmp_path, entries)
+    assert _bytes(inventory[image.CREDENTIAL]) == [b'two']
+    assert any('could not write' in line for line in logs)
+    names = [f for _d, _s, files in os.walk(tmp_path) for f in files]
+    assert names == ['good']
 
 
 def test_lost_entries_reach_the_warning_channel(monkeypatch, tmp_path):

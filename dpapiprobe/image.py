@@ -107,33 +107,65 @@ def extract_dpapi_tree(image_path, dest_dir, password=None, private_key=None,
     return inventory
 
 
-def _safe_parts(names):
-    """An entry's stored names as path parts that stay under the destination on any OS.
+def _raw_parts(names):
+    """An entry's stored names split at either separator, without empty and '.' parts."""
+    return [part for name in names for part in re.split(r'[\\/]', name)
+            if part not in ('', '.')]
 
-    Logical evidence records paths from the machine that collected it, so a name can hold
-    a separator, a drive letter, a parent reference, a character or name Windows cannot
-    create, or an unpaired surrogate no filesystem API can encode.
+
+def _safe_part(part):
+    """One stored name as a part that stays under the destination on any OS: it can hold a
+    drive letter, a parent reference, a character or name Windows cannot create, or an
+    unpaired surrogate no filesystem API can encode."""
+    part = re.sub('[:<>"|?*\x00-\x1f\ud800-\udfff]', '_', part)
+    if not part.strip(' .'):
+        part = '_'
+    else:
+        # Windows drops trailing dots and spaces, which would merge two names
+        part = re.sub(r'[ .]+$', lambda m: '_' * len(m.group()), part)
+    if _WINDOWS_RESERVED.fullmatch(part.split('.')[0].rstrip(' ')):
+        part = '_' + part
+    return part
+
+
+def _safe_parts(names):
+    """An entry's stored names as path parts that stay under the destination on any OS."""
+    return [_safe_part(part) for part in _raw_parts(names)]
+
+
+def _assign_folders(paths):
+    """The safe parts of each ``(raw parts, safe parts)``, with one folder per source folder.
+
+    Cleaning a name can make two source folders read alike (``a:b`` and ``a_b``). The CLI
+    pairs files by folder, so they must not share one. A folder whose name needed no
+    cleaning keeps it; the other gets a ``~folder-<n>`` suffix.
     """
-    parts = []
-    for name in names:
-        for part in re.split(r'[\\/]', name):
-            if part in ('', '.'):
-                continue
-            part = re.sub('[:<>"|?*\x00-\x1f\ud800-\udfff]', '_', part)
-            if not part.strip(' .'):
-                part = '_'
-            else:
-                # Windows drops trailing dots and spaces, which would merge two names
-                part = re.sub(r'[ .]+$', lambda m: '_' * len(m.group()), part)
-            if _WINDOWS_RESERVED.fullmatch(part.split('.')[0].rstrip(' ')):
-                part = '_' + part
-            parts.append(part)
-    return parts
+    assigned, owners = {}, {}
+
+    def place(raw, safe):
+        out = []
+        for depth in range(len(raw) - 1):
+            key = _same_path_key('/'.join(raw[:depth + 1]))
+            if key not in assigned:
+                name, number = safe[depth], 1
+                slot = _same_path_key('/'.join(out + [name]))
+                while owners.setdefault(slot, key) != key:
+                    number += 1
+                    name = '%s~folder-%d' % (safe[depth], number)
+                    slot = _same_path_key('/'.join(out + [name]))
+                assigned[key] = name
+            out.append(assigned[key])
+        return out + [safe[-1]]
+
+    for raw, safe in paths:                        # names that needed no cleaning go first
+        if raw[:-1] == safe[:-1]:
+            place(raw, safe)
+    return [place(raw, safe) for raw, safe in paths]
 
 
 def _copy_entry(img, entry, dest, run):
     """Copy an entry to a path nothing holds yet. Returns 'ok', 'taken' when something holds
-    the path, 'unreadable' when the entry cannot be read, 'damaged' when its bytes do not
+    the path, 'unreadable' when the entry cannot be read in full at its declared size, 'damaged' when its bytes do not
     match the hash the evidence stores, 'bad-chunk' when it stores none and a chunk behind
     it failed its checksum, or 'unwritable' when the copy cannot be made. The bytes are read in full first, so an unreadable entry leaves no
     folder behind that would stand in another entry's way."""
@@ -142,6 +174,7 @@ def _copy_entry(img, entry, dest, run):
                     else ('sha1', getattr(entry, 'sha1', None)))
     digest = hashlib.new(kind) if stored else None
     reading = True
+    got = 0
     try:
         with img.open_entry(entry) as src:
             reading = False
@@ -152,6 +185,9 @@ def _copy_entry(img, entry, dest, run):
                     reading = False
                     if not chunk:
                         break
+                    got += len(chunk)
+                    if got > entry.size:           # more than the entry declares
+                        break
                     handle.write(chunk)
                     if digest:
                         digest.update(chunk)
@@ -159,6 +195,9 @@ def _copy_entry(img, entry, dest, run):
         if os.path.exists(scratch):
             os.remove(scratch)
         return 'unreadable' if reading else 'unwritable'
+    if got != entry.size:
+        os.remove(scratch)
+        return 'unreadable'
     if digest and digest.hexdigest() != stored.lower():
         os.remove(scratch)
         return 'damaged'
@@ -176,7 +215,14 @@ def _copy_entry(img, entry, dest, run):
             os.path.isfile(parent) for parent in _parents(dest, run))
         _remove_empty_parents(dest, run)
         return 'taken' if taken else 'unwritable'
-    os.replace(scratch, dest)
+    try:
+        os.replace(scratch, dest)
+    except OSError:
+        for leftover in (scratch, dest):
+            if os.path.exists(leftover):
+                os.remove(leftover)
+        _remove_empty_parents(dest, run)
+        return 'unwritable'
     return 'ok'
 
 
@@ -231,22 +277,28 @@ def _extract_logical(image_path, dest_dir, password, private_key, inventory, log
         run = tempfile.mkdtemp(prefix='logical-', dir=dest_dir)
         root = os.path.join(run, 'files')
         ad1 = img.format == ewfprobe.FORMAT_AD1
-        wanted, live = [], set()
+        found = []
         for position, entry in enumerate(img.logical_entries):
             if ad1 and entry.type_code in _AD1_NOT_FILES:
                 continue
             if entry.is_folder and (ad1 or not entry.size or not entry.content_collected):
                 continue
-            parts = _safe_parts(entry.names)
-            if not parts:
+            raw = _raw_parts(entry.names)
+            if not raw:
                 continue
-            rel = '/'.join(parts)
+            safe = [_safe_part(part) for part in raw]
+            rel = '/'.join(safe)
             category = _category('logical/' + rel)     # the prefix stands for a volume name
             if category is None:
                 continue
             if ad1 and entry.is_deleted:
                 warn('left out %s: FTK Imager lists it as deleted' % rel)
                 continue
+            found.append((position, entry, raw, safe, category))
+        wanted, live = [], set()
+        placed = _assign_folders([(item[2], item[3]) for item in found])
+        for (position, entry, _raw, _safe, category), parts in zip(found, placed):
+            rel = '/'.join(parts)
             has_dl = bool((entry.times or {}).get('dl'))
             if not has_dl:
                 live.add(_same_path_key(rel))
