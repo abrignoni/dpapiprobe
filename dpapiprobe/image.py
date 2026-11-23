@@ -134,7 +134,10 @@ def _safe_parts(names):
 
 
 def _assign_folders(paths):
-    """The safe parts of each ``(raw parts, safe parts)``, one place per source name.
+    """The safe parts of each ``(identity, safe parts, clean)``, one place per source name.
+
+    ``identity`` holds one key per part (``_part_keys``), so a stored name holding a
+    separator is not the same source as a real nested path.
 
     Cleaning a name, or a volume that folds case or Unicode form, can make two source names
     read alike (``a:b`` and ``a_b``, ``Key`` and ``key``). The CLI pairs files by folder and
@@ -145,10 +148,10 @@ def _assign_folders(paths):
     """
     assigned, owners = {}, {}
 
-    def place(raw, safe):
+    def place(identity, safe):
         out = []
         for depth, cleaned in enumerate(safe):
-            key = '/'.join(raw[:depth + 1])        # the stored names are the identity
+            key = identity[depth]
             if key not in assigned:
                 is_file = depth == len(safe) - 1
                 base, ext = os.path.splitext(cleaned) if is_file else (cleaned, '')
@@ -162,10 +165,25 @@ def _assign_folders(paths):
             out.append(assigned[key])
         return out
 
-    for raw, safe in paths:                        # names that needed no cleaning go first
-        if raw == safe:
-            place(raw, safe)
-    return [place(raw, safe) for raw, safe in paths]
+    for identity, safe, clean in paths:            # names that needed no cleaning go first
+        if clean:
+            place(identity, safe)
+    return [place(identity, safe) for identity, safe, _clean in paths]
+
+
+def _part_keys(names):
+    """One key per path part, keeping where each stored name began and ended."""
+    keys, so_far = [], ''
+    for name in names:
+        inner = ''
+        for part in re.split(r'[\\/]', name):
+            if part in ('', '.'):
+                continue
+            inner = inner + '\x01' + part if inner else part
+            keys.append(so_far + '\x00' + inner)
+        if inner:
+            so_far += '\x00' + inner
+    return keys
 
 
 def _copy_entry(img, entry, dest, run):
@@ -307,10 +325,11 @@ def _extract_logical(image_path, dest_dir, password, private_key, inventory, log
             if ad1 and entry.is_deleted:
                 warn('left out %s: FTK Imager lists it as deleted' % rel)
                 continue
-            found.append((position, entry, raw, safe, category))
+            clean = raw == safe and not any(re.search(r'[\\/]', name) for name in entry.names)
+            found.append((position, entry, (_part_keys(entry.names), safe, clean), category))
         wanted, live = [], set()
-        placed = _assign_folders([(item[2], item[3]) for item in found])
-        for (position, entry, _raw, _safe, category), parts in zip(found, placed):
+        placed = _assign_folders([item[2] for item in found])
+        for (position, entry, _path, category), parts in zip(found, placed):
             rel = '/'.join(parts)
             has_dl = bool((entry.times or {}).get('dl'))
             if not has_dl:

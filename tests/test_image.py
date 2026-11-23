@@ -250,7 +250,8 @@ def test_logical_flattened_name_does_not_take_a_real_files_path(monkeypatch, tmp
     flattened = _Entry('Windows/System32/x', b'other')
     flattened.names = ('Windows', 'System32', 'config\\SYSTEM')
     inventory, _ = _extract(monkeypatch, tmp_path, [flattened, _Entry(SYSTEM, b'hive')])
-    assert _bytes(inventory[image.HIVE]) == [b'hive']
+    named = {os.path.basename(p): open(p, 'rb').read() for p in inventory[image.HIVE]}
+    assert named == {'SYSTEM': b'hive', 'SYSTEM~name-2': b'other'}
 
 
 def test_logical_write_failure_is_not_called_unreadable(monkeypatch, tmp_path):
@@ -454,6 +455,48 @@ def test_local_state_is_keyed_by_this_os_folder():
         pytest.skip('a backslash is a separator on Windows')
     local_states, _logins, _cookies = cli._group_chromium(['/x/a\\b/User Data/Local State'])
     assert list(local_states) == ['/x/a\\b/User Data']
+
+
+def test_vault_prefers_the_exact_policy_and_skips_folders(tmp_path, monkeypatch):
+    if _folds_case(tmp_path):
+        pytest.skip('needs a case-sensitive volume')
+    (tmp_path / 'POLICY.VPOL').mkdir()
+    (tmp_path / 'Policy.vpol').write_bytes(b'policy')
+    (tmp_path / 'X.VCRD').mkdir()
+    (tmp_path / 'r.vcrd').write_bytes(b'record')
+    policies, records = [], []
+
+    class Policy:
+        def __init__(self, raw):
+            policies.append(raw)
+
+        def decrypt_with_pool(self, _pool):
+            pass
+
+        def aes_key_candidates(self, _size):
+            return [b'k']
+
+    class Record:
+        friendly_name = 'x'
+
+        def __init__(self, raw):
+            records.append(raw)
+
+        def decrypt(self, _keys):
+            return {}, None
+    monkeypatch.setattr(cli, 'VaultPolicy', Policy)
+    monkeypatch.setattr(cli, 'VaultCredential', Record)
+    cli._decrypt_vault_dir(str(tmp_path), None)
+    assert policies == [b'policy'] and records == [b'record']
+
+
+def _folds_case(folder):
+    probe = folder / 'CaseProbe'
+    probe.write_bytes(b'')
+    try:
+        return (folder / 'caseprobe').exists()
+    finally:
+        probe.unlink()
 
 
 def test_vault_finds_names_in_any_case(tmp_path, monkeypatch):

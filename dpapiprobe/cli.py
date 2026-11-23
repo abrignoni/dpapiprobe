@@ -207,16 +207,18 @@ def cmd_user_masterkeys(args):
     return _report_pool(_user_pool(args))
 
 
-_BAD_RECORD = (struct.error, ValueError, IndexError, KeyError, TypeError)
+_BAD_RECORD = (struct.error, ValueError, IndexError, KeyError, TypeError, OSError)
 
 
 def _decrypt_vault_dir(vault_dir, pool):
     """Recovered web credentials from one Vault directory as a list of dicts."""
     names = sorted(os.listdir(vault_dir)) if os.path.isdir(vault_dir) else []
-    policy = [name for name in names if name.lower() == 'policy.vpol']
-    vpol_path = os.path.join(vault_dir, policy[0]) if policy else ''
-    if not os.path.isfile(vpol_path):
+    names = [name for name in names if os.path.isfile(os.path.join(vault_dir, name))]
+    policy = ['Policy.vpol'] if 'Policy.vpol' in names else [
+        name for name in names if name.lower() == 'policy.vpol']
+    if not policy:
         return []
+    vpol_path = os.path.join(vault_dir, policy[0])
     vpol = VaultPolicy(_read(vpol_path))
     vpol.decrypt_with_pool(pool)
     aes_keys = vpol.aes_key_candidates(32)
@@ -304,8 +306,8 @@ def _record(kind, ident, name, clear, scheme):
 
 def _readonly_uri(db_path):
     """A read-only SQLite URI for a path, which may hold #, ? or %."""
-    # joined, not abspath: collapsing '..' before the OS resolves a symlink changes the file
-    path = os.path.join(os.getcwd(), db_path)
+    # realpath, not abspath: collapsing '..' before resolving a symlink changes the file
+    path = os.path.realpath(db_path)
     if os.sep == '\\':                            # a backslash is a name character elsewhere
         path = path.replace('\\', '/')
     if not path.startswith('/'):
